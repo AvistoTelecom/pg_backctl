@@ -26,3 +26,7 @@ During execution, the docker image will:
 4. **Restore WAL**: It restores the WAL to get the database to the last consistent state.
 5. **Create recovery.signal**: This file is used to tell that the database has to perform a recovery.
 6. **Change owner**: It changes the owner of the /data folder to 999:999 which is the postgres user and group.
+
+## TODO
+- [ ] Default behavior => Grab latest backup
+- [ ] Override possibility to specify a backup
