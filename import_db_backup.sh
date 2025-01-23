@@ -1,21 +1,23 @@
 #!/bin/bash
 
 # Parse command line arguments
-while getopts "a:s:r:u:" opt; do
+while getopts "a:s:r:u:v:n:" opt; do
   case $opt in
     a) aws_access_key="$OPTARG";;
     s) aws_secret_key="$OPTARG";;
     r) aws_region="$OPTARG";;
     u) s3_url="$OPTARG";;
-    ?) echo "Usage: $0 -a AWS_ACCESS_KEY -s AWS_SECRET_KEY -r AWS_REGION -u S3_BACKUP_URL" >&2
+    v) volume_name="$OPTARG";;
+    n) service="$OPTARG";;
+    ?) echo "Usage: $0 -a AWS_ACCESS_KEY -s AWS_SECRET_KEY -r AWS_REGION -u S3_BACKUP_URL -v VOLUME_NAME -n SERVICE_NAME" >&2
        exit 1;;
   esac
 done
 
 # Verify all required arguments are provided
-if [ -z "$aws_access_key" ] || [ -z "$aws_secret_key" ] || [ -z "$aws_region" ] || [ -z "$s3_url" ]; then
+if [ -z "$aws_access_key" ] || [ -z "$aws_secret_key" ] || [ -z "$aws_region" ] || [ -z "$s3_url" ] || [ -z "$volume_name" ] || [ -z "$service" ]; then
     echo "Error: Missing required arguments"
-    echo "Usage: $0 -a AWS_ACCESS_KEY -s AWS_SECRET_KEY -r AWS_REGION -u S3_BACKUP_URL"
+    echo "Usage: $0 -a AWS_ACCESS_KEY -s AWS_SECRET_KEY -r AWS_REGION -u S3_BACKUP_URL -v VOLUME_NAME -n SERVICE_NAME"
     exit 1
 fi
 
