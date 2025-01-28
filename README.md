@@ -17,6 +17,11 @@
 - -n: name the service to down (e.g. db)
 - -f: path to the docker compose file
 
+### Error codes
+#### code 3
+Fires when using the arg `-c` that is used to override postgresql configuration. 
+You get this error when there is no file named `postgresql.auto.conf` in the folder `confs`.
+
 ## Docker image overview
 When run, the docker image expects 4 environment variables:
 - AWS_ACCESS_KEY_ID
