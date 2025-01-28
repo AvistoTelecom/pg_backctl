@@ -1,7 +1,5 @@
-## Install python If exsite
 FROM debian:12-slim AS builder
 RUN apt update && apt install -y curl unzip
-## Install fucking binary AWS CLI If existe
 RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" 
 RUN unzip awscliv2.zip
 RUN bash ./aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update
@@ -10,6 +8,6 @@ RUN bash ./aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli
 FROM debian:12-slim
 COPY --from=builder /usr/local/aws-cli/ /usr/local/aws-cli/
 COPY --from=builder /usr/local/bin/ /usr/local/bin/
-COPY entrypoint.sh /entrypoint.sh
+COPY --chmod=700 entrypoint.sh /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
 CMD [""]

@@ -11,10 +11,10 @@ aws s3 cp ${S3_BACKUP_URL} .
 # Clean the volume
 rm -rf /data/*
 # Restore base.tar.gz in data
-sudo tar -zxf base.tar.gz -C /data/
+tar -zxf base.tar.gz -C /data/
 # Restore wal
-sudo tar -zxf pg_wal.tar.gz -C /data/pg_wal/
+tar -zxf pg_wal.tar.gz -C /data/pg_wal/
 # Create recovery.signal
-sudo touch /data/recovery.signal
+touch /data/recovery.signal
 # Change owner in volume
-sudo chown -R 999:999 /data
+chown -R 999:999 /data
