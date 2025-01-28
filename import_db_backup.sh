@@ -27,7 +27,7 @@ if $replace_conf; then
     if [ -f ./confs/postgresql.auto.conf]; then
       pass
     else
-      echo "postgresql.auto.conf is missing"
+      echo "option -c to replace config is set to true but postgresql.auto.conf is missing"
       exit 3
   fi
 fi
