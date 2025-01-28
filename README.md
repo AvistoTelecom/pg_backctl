@@ -94,21 +94,21 @@ ODO is started on the db volume in order to perform the following steps:
 
 ## What's Next?
 
-1. **Update Postgres conf if needed** ⭐
-2. **Mount the S3 volume instead of downloading it** 🚀
-3. **Support for specific backup selection instead of latest** 🔖
-4. Add an arg to create a new volume. 
-	1. Have a secondary mod to mount a temporary DB
-5. Fetch backups from other sources than a S3
-6. Improve Documentation
-	1. Use cases
-	2. Recommendation of usage (screen / tmux)
+1. [x] **Update Postgres conf if needed** ⭐
+2. [ ] **Mount the S3 volume instead of downloading it** 🚀
+3. [ ] **Support for specific backup selection instead of latest** 🔖
+4. [ ] Add an arg to create a new volume. 
+	1. [ ] Have a secondary mod to mount a temporary DB
+5. [ ] Fetch backups from other sources than a S3
+6. [ ] Improve Documentation
+	1. [ ] Use cases
+	2. [ ] Recommendation of usage (screen / tmux)
 > PROD READY
-7. Add preliminary checks & robustness
-	1. Check disk space 
-	2. Check format of input data
-	3. Add checkpoints to avoid full restart in case of failure
-8. Support for incremental backups
+7. [ ] Add preliminary checks & robustness
+	1. [ ] Check disk space 
+	2. [ ] Check format of input data
+	3. [ ] Add checkpoints to avoid full restart in case of failure
+8. [ ] Support for incremental backups
 
 
 ### For much later
