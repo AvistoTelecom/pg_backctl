@@ -1,7 +1,8 @@
 #!/bin/bash
 replace_conf=false
+override_volume=false
 # Parse command line arguments
-while getopts "a:s:r:u:v:n:f:c:" opt; do
+while getopts "a:s:r:u:v:n:f:c:o:V:" opt; do
   case $opt in
     a) aws_access_key="$OPTARG";;
     s) aws_secret_key="$OPTARG";;
@@ -11,6 +12,8 @@ while getopts "a:s:r:u:v:n:f:c:" opt; do
     n) service="$OPTARG";;
     f) compose_filepath="$OPTARG";;
     c) replace_conf="$OPTARG";;
+    o) override_volume="$OPTARG";;
+    V) new_volume_name="$OPTARG";;
     ?) echo "Usage: $0 -a AWS_ACCESS_KEY -s AWS_SECRET_KEY -r AWS_REGION -u S3_BACKUP_URL -v VOLUME_NAME -n SERVICE_NAME -f COMPOSE_FILEPATH -c REPLACE_CONF" >&2
        exit 1;;
   esac
@@ -32,23 +35,48 @@ if $replace_conf; then
   fi
 fi
 
+if [[ ! $override_volume && -z "$new_volume_name"]];then
+  echo "You need to specify a new_volume_name or use -o true"
+  exit 4
+fi
+
 # Down container
 docker compose -f $compose_filepath down $service
 
-# Run side container --rm + mount volume
-# Odo handles the restoration of the backup
-docker run -d --rm \
-  -e AWS_ACCESS_KEY_ID=$aws_access_key \
-  -e AWS_SECRET_ACCESS_KEY=$aws_secret_key \
-  -e AWS_DEFAULT_REGION=$aws_region \
-  -e S3_BACKUP_URL=$s3_url \
-  -v $volume_name:/data odo:0.1
+if $override_volume;then
+  # Run side container --rm + mount volume
+  # Odo handles the restoration of the backup
+  docker run -d --rm \
+    -e AWS_ACCESS_KEY_ID=$aws_access_key \
+    -e AWS_SECRET_ACCESS_KEY=$aws_secret_key \
+    -e AWS_DEFAULT_REGION=$aws_region \
+    -e S3_BACKUP_URL=$s3_url \
+    -v $volume_name:/data odo:0.1
+else
+  sed -i.bak 's/$volume_name/$new_volume_name/g' $compose_filepath
+  docker compose -f $compose_filepath up -d $service
+  docker compose -f $compose_filepath down $service
+  # Get compose folder prefix and add it to new_volume_name
+  folder_name=$(echo "$compose_filepath" | sed -E 's/.*\/(\w+)\/[^\/]*\.ya?ml$/\1/')
+  new_compose_vol_name=${folder_name}_${new_volume_name}
+  # Run side container --rm + mount volume
+  # Odo handles the restoration of the backup
+  docker run -d --rm \
+    -e AWS_ACCESS_KEY_ID=$aws_access_key \
+    -e AWS_SECRET_ACCESS_KEY=$aws_secret_key \
+    -e AWS_DEFAULT_REGION=$aws_region \
+    -e S3_BACKUP_URL=$s3_url \
+    -v $new_compose_vol_name:/data odo:0.1
+fi
 
 # Up container
 docker compose -f $compose_filepath up -d $service
 
 # Promote master
-docker exec -it -u postgres $CONTAINER_NAME bash -c "pg_ctl promote"
+docker exec -t -u postgres $CONTAINER_NAME bash -c "pg_ctl promote"
+
+
+
 # Check if replace_conf == true
 if $replace_conf; then
   # Alter config
