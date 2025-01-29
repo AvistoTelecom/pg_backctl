@@ -16,11 +16,54 @@
 - -v: volume name
 - -n: name the service to down (e.g. db)
 - -f: path to the docker compose file
+- -c: relace configuration
+- -o: override volume
+- -V: new volume name
+
+#### -a -s -r
+**THEY WILL BE MOVED IN CONFIGURATION FILES INSTEAD**
+
+#### -u: S3 backup URL
+S3 URL pointing to the backup.
+
+#### -v: volume name
+Name of the volume currently containing the database.
+
+#### -n: name of the db service
+Used to stop the service in order to perform the restoration.
+
+#### -f: compose file path
+Path to the compose file that manage the DB you want to restore.
+
+**IMPORTANT** the file path must at least contain the parent folder name. It can be required later on.
+
+#### -c: replace configuration
+Will look in the `confs/` folder for a `postgres.auto.conf` file and if it exists it will replace the current auto conf with this file.
+This allows you to override postgres configuration after the restoration.
+
+> If you use -c without having a `postgres.auto.conf` in the `confs/` you will get a **code 3 error**
+
+#### -o: override volume
+Instruct the script to perform the restoration on the current volume.
+The data in the volume will be **deleted** and replaced by the data from the backup.
+
+#### -V: new volume name
+Give the script a name for a new volume that will replace the current one.
+This option will lead to the compose file also being updated with the new volume name.
+
+The old volume will be preserved in case of error, you will need to clean it up manualy when no longer needed.
+The old compose file will also be preserved by adding a .bak suffix to the original version.
+
 
 ### Error codes
 #### code 3
 Fires when using the arg `-c` that is used to override postgresql configuration. 
 You get this error when there is no file named `postgresql.auto.conf` in the folder `confs`.
+
+#### code 4
+Fires when you have started ODO with unsafe volume parameters.
+By default ODO will create a new volume an expect a new volume name passed with the arg `-V` (capital "v")
+The other way is to use `-o` to switch to override mode and the acutal volume will be cleaned and used for the restoration
 
 ## Docker image overview
 When run, the docker image expects 4 environment variables:
