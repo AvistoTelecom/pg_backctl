@@ -10,4 +10,3 @@ COPY --from=builder /usr/local/aws-cli/ /usr/local/aws-cli/
 COPY --from=builder /usr/local/bin/ /usr/local/bin/
 COPY --chmod=700 entrypoint.sh /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
-CMD [""]
