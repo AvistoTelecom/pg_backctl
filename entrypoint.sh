@@ -18,3 +18,6 @@ tar -zxf pg_wal.tar.gz -C /data/pg_wal/
 touch /data/recovery.signal
 # Change owner in volume
 chown -R 999:999 /data
+
+# init restore_command #TEMPORARY 
+echo "restore_command = 'cp /var/lib/postgresql/pg_wal/%f %p'" >> /data/postgresql.conf
