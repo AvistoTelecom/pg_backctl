@@ -30,9 +30,7 @@ fi
 # Check if replace_conf is true and postgresql.auto.conf is provided
 if $replace_conf; then
     echo "REPLACE CONF"
-    if [ -f ./confs/postgresql.auto.conf]; then
-      pass
-    else
+    if [ ! -e ./confs/postgresql.auto.conf ]; then
       echo "option -c to replace config is set to true but postgresql.auto.conf is missing"
       exit 3
   fi
@@ -102,7 +100,7 @@ docker compose -f $compose_filepath exec -u postgres $service bash -c "pg_ctl pr
 # Check if replace_conf == true
 if $replace_conf; then
   # Alter config
-  docker cp ./confs/postgresql.auto.conf $container_name:/var/lib/postgresql/data/postgresql.auto.conf
+  docker compose -f $compose_filepath cp ./confs/postgresql.auto.conf $service:/var/lib/postgresql/data/postgresql.auto.conf
   # restart container
   docker compose -f $compose_filepath restart -d $service
 fi
