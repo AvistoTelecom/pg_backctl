@@ -140,7 +140,7 @@ ODO is started on the db volume in order to perform the following steps:
 1. [x] **Update Postgres conf if needed** ⭐
 2. [ ] **Mount the S3 volume instead of downloading it** 🚀
 3. [ ] **Support for specific backup selection instead of latest** 🔖
-4. [ ] Add an arg to create a new volume. 
+4. [x] Add an arg to create a new volume. 
 	1. [ ] Have a secondary mod to mount a temporary DB
 5. [ ] Fetch backups from other sources than a S3
 6. [ ] Improve Documentation
