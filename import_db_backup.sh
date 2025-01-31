@@ -25,17 +25,24 @@ while getopts "asru:e:v:n:f:coV:" opt; do
     c) replace_conf=true;;
     o) override_volume=true;;
     V) new_volume_name="$OPTARG";;
-    ?) echo "Usage: $0 -a AWS_ACCESS_KEY -s AWS_SECRET_KEY -r AWS_REGION -u S3_BACKUP_URL -e S3_ENDPOINT -v VOLUME_NAME -n SERVICE_NAME -f COMPOSE_FILEPATH -c REPLACE_CONF" >&2
+    ?) echo "Usage: $0 -u S3_BACKUP_URL -e S3_ENDPOINT -v VOLUME_NAME -n SERVICE_NAME -f COMPOSE_FILEPATH -c REPLACE_CONF -o OVERRIDE_VOLUME -V NEW_VOLUME_NAME" >&2
        exit 1;;
   esac
 done
 
+# Check that AWS CLI info are present
+if [ -z "$AWS_ACCESS_KEY" ] || [ -z "$AWS_SECRET_KEY" ] || [ -z "$AWS_REGION" ]; then
+  echo "Error: Missing info in .env. Ensure you have set AWS_ACCESS_KEY, AWS_SECRET_KEY and AWS_REGION."
+  exit 1
+fi
+
 # Verify all required arguments are provided
-if [ -z "$AWS_ACCESS_KEY" ] || [ -z "$AWS_SECRET_KEY" ] || [ -z "$AWS_REGION" ] || [ -z "$s3_url" ] || [ -z "$volume_name" ] || [ -z "$service" ] || [ -z "$compose_filepath" ]; then
+if [ -z "$s3_url" ] || [ -z "$s3_endpoint" ] || [ -z "$volume_name" ] || [ -z "$service" ] || [ -z "$compose_filepath" ]; then
     echo "Error: Missing required arguments"
-    echo "Usage: $0 -a AWS_ACCESS_KEY -s AWS_SECRET_KEY -r AWS_REGION -u S3_BACKUP_URL -v VOLUME_NAME -n SERVICE_NAME -f COMPOSE_FILEPATH"
+    echo "Usage: $0 -u S3_BACKUP_URL -e S3_ENDPOINT -v VOLUME_NAME -n SERVICE_NAME -f COMPOSE_FILEPATH"
     exit 1
 fi
+
 # Check if replace_conf is true and postgresql.auto.conf is provided
 if $replace_conf; then
     echo "REPLACE CONF"
@@ -45,13 +52,18 @@ if $replace_conf; then
   fi
 fi
 
+# Check if we either override or use a new volume name
 if [ $override_volume = false ] && [ -z "$new_volume_name" ]; then
   echo "You need to specify a new_volume_name using -V or use -o to override"
   exit 4
+else
+  if [ $volume_name == $new_volume_name ]; then
+    echo "You need to specify a new volume name different from actual volume name"
+    exit 4
+  fi
 fi
 
 # Down container
-echo "Downing $service"
 docker compose -f $compose_filepath down $service
 
 if $override_volume; then
@@ -90,7 +102,6 @@ else
     echo "Failed to do oil"
     exit 5
   fi
-
 fi
 
 # Up container
@@ -100,9 +111,7 @@ sleep 10
 # Promote master
 echo "Promoting database"
 docker compose -f $compose_filepath exec -u postgres $service bash -c "pg_ctl promote"
-
-
-
+ 
 # Check if replace_conf == true
 if $replace_conf; then
   # Alter config
