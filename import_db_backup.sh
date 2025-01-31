@@ -1,13 +1,22 @@
 #!/bin/bash
+
+# Boolean default values
 replace_conf=false
 override_volume=false
 replace_conf=false
+
+# Load env
+ENV_FILE=".env"
+if [[ -f "$ENV_FILE" ]]; then
+  export $(grep -v '^#' "$ENV_FILE" | xargs)
+fi
+
 # Parse command line arguments
-while getopts "a:s:r:u:e:v:n:f:coV:" opt; do
+while getopts "asru:e:v:n:f:coV:" opt; do
   case $opt in
-    a) aws_access_key="$OPTARG";;
-    s) aws_secret_key="$OPTARG";;
-    r) aws_region="$OPTARG";;
+    a) AWS_ACCESS_KEY="$OPTARG";;
+    s) AWS_SECRET_KEY="$OPTARG";;
+    r) AWS_REGION="$OPTARG";;
     u) s3_url="$OPTARG";;
     e) s3_endpoint="$OPTARG";;
     v) volume_name="$OPTARG";;
@@ -22,7 +31,7 @@ while getopts "a:s:r:u:e:v:n:f:coV:" opt; do
 done
 
 # Verify all required arguments are provided
-if [ -z "$aws_access_key" ] || [ -z "$aws_secret_key" ] || [ -z "$aws_region" ] || [ -z "$s3_url" ] || [ -z "$volume_name" ] || [ -z "$service" ] || [ -z "$compose_filepath" ]; then
+if [ -z "$AWS_ACCESS_KEY" ] || [ -z "$AWS_SECRET_KEY" ] || [ -z "$AWS_REGION" ] || [ -z "$s3_url" ] || [ -z "$volume_name" ] || [ -z "$service" ] || [ -z "$compose_filepath" ]; then
     echo "Error: Missing required arguments"
     echo "Usage: $0 -a AWS_ACCESS_KEY -s AWS_SECRET_KEY -r AWS_REGION -u S3_BACKUP_URL -v VOLUME_NAME -n SERVICE_NAME -f COMPOSE_FILEPATH"
     exit 1
@@ -49,15 +58,15 @@ if $override_volume; then
   # Run side container --rm + mount volume
   # Odo handles the restoration of the backup
   docker run -t --rm \
-    -e AWS_ACCESS_KEY_ID=$aws_access_key \
-    -e AWS_SECRET_ACCESS_KEY=$aws_secret_key \
-    -e AWS_DEFAULT_REGION=$aws_region \
+    -e AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY \
+    -e AWS_SECRET_ACCESS_KEY=$AWS_SECRET_KEY \
+    -e AWS_DEFAULT_REGION=$AWS_REGION \
     -e S3_BACKUP_URL=$s3_url \
     -e S3_ENDPOINT=$s3_endpoint \
     -v $volume_name:/data odo:0.2
 else
   echo "Creating new volume: $new_volume_name"
-  echo "running sed"
+  echo "Updating compose file"
   sed -i.bak "s/$volume_name/$new_volume_name/g" $compose_filepath
   docker compose -f $compose_filepath up -d $service
   docker compose -f $compose_filepath down $service
@@ -70,9 +79,9 @@ else
   # Odo handles the restoration of the backup
   echo "Starting ODO"
   docker run -t --rm --name odo \
-    -e AWS_ACCESS_KEY_ID="$aws_access_key" \
-    -e AWS_SECRET_ACCESS_KEY="$aws_secret_key" \
-    -e AWS_DEFAULT_REGION="$aws_region" \
+    -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY" \
+    -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_KEY" \
+    -e AWS_DEFAULT_REGION="$AWS_REGION" \
     -e S3_BACKUP_URL="$s3_url" \
     -e S3_ENDPOINT="$s3_endpoint" \
     -v "$new_compose_vol_name":/data odo:0.2
@@ -84,13 +93,10 @@ else
 
 fi
 
-echo "Add sleep"
-sleep 10
 # Up container
 docker compose -f $compose_filepath up -d $service
 
-echo "#friday mood: slip 10 again"
-sleep 10
+sleep 10 
 # Promote master
 echo "Promoting database"
 docker compose -f $compose_filepath exec -u postgres $service bash -c "pg_ctl promote"
