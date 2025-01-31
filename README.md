@@ -1,18 +1,20 @@
 # Prerequisite
 - S3 with a your backup stored on it.
 	- Soon able to get backups from other sources.
+- a `.env` file with the following elements:
+  - `AWS_ACCESS_KEY`
+  - `AWS_SECRET_KEY`
+  - `AWS_REGION`
 - The backup must be performed by pg_basebackup
 - Backup must be gunziped
 
 # Usage
 ```bash
-./import_db_backup.sh -a AWS_ACCESS_KEY -s AWS_SECRET_KEY -r AWS_REGION -u S3_BACKUP_URL -v VOLUME_NAME -n SERVICE_NAME -f COMPOSE_FILEPATH
+./import_db_backup.sh -u S3_BACKUP_URL -e S3_ENDPOINT -v VOLUME_NAME -n SERVICE_NAME -f COMPOSE_FILEPATH -c REPLACE_CONF -o OVERRIDE_VOLUME -V NEW_VOLUME_NAME
 ```
 ### Args
-- -a: AWS access key
-- -s: AWS secret key
-- -r: AWS region
 - -u: S3 backup URL
+- -e: S3 endpoint 
 - -v: volume name
 - -n: name the service to down (e.g. db)
 - -f: path to the docker compose file
@@ -20,11 +22,19 @@
 - -o: override volume
 - -V: new volume name
 
-#### -a -s -r
-**THEY WILL BE MOVED IN CONFIGURATION FILES INSTEAD**
+#### optionnal
+- -c: replace postgresql.auto.conf (uses the one defined in `confs` folder)
+- -o: override the volume (DO NOT USE IN PROD, USE -V INSTEAD)
+- -V: name of the new volume used for restoration
+- -a: AWS access key  => should be defined in `.env`
+- -s: AWS secret key  => should be defined in `.env`
+- -r: AWS regioni     => should be defined in `.env`
 
 #### -u: S3 backup URL
 S3 URL pointing to the backup.
+
+#### -e: S3 endpoint
+S3 endpoint, required when using AWS CLI to request for other sources than AWS (like OVH)
 
 #### -v: volume name
 Name of the volume currently containing the database.
