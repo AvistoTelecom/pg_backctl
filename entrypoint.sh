@@ -19,5 +19,9 @@ touch /data/recovery.signal
 # Change owner in volume
 chown -R 999:999 /data
 
-# init restore_command #TEMPORARY 
-echo "restore_command = 'cp /var/lib/postgresql/pg_wal/%f %p'" >> /data/postgresql.conf
+# Ensure 'restore_command' is set.
+result=$(sed -n "/^restore_command/p" /data/postgresql.conf)  # check if there is already a restore_command
+
+if [[ -z $result ]]; then  # Ensure that result was empty (no command found)
+  sed -i "s/^#restore_command = ''/restore_command = 'cp \/var\/lib\/postgresql\/pg_wal\/%f %p'/" /data/postgresql.conf
+fi
