@@ -7,6 +7,8 @@
   - `AWS_REGION`
 - The backup must be performed by pg_basebackup
 - Backup must be gunziped
+- Logged to the registry where odo is storred or you already have the image localy
+- The volume names are the same as defined in the compose file (not the one given by docker volume ls e.g. just `db`, not `odo_db`)
 
 # Usage
 ```bash
