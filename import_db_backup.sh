@@ -7,7 +7,7 @@ replace_conf=false
 pgversion="latest"
 mode=0
 standby=false
-odo_version="latest"
+odo_image="odo:latest"
 
 # Function check AWS
 check_aws() {
@@ -44,7 +44,7 @@ run_odo() {
   -e AWS_DEFAULT_REGION=$AWS_REGION \
   -e S3_BACKUP_URL=$s3_url \
   -e S3_ENDPOINT=$s3_endpoint \
-  -v ${1:-"ODO_STANDBY_VOLUME"}:/data odo:$odo_version
+  -v ${1:-"ODO_STANDBY_VOLUME"}:/data $odo_image
 }
 
 # Function replace conf
@@ -88,7 +88,7 @@ while getopts "asru:e:v:n:f:coV:p:SO:" opt; do
     V) new_volume_name="$OPTARG";;
     p) pgversion="$OPTARG";;
     S) standby=true;;
-    O) odo_version="$OPTARG";;
+    O) odo_image="$OPTARG";;
     ?) echo "Usage: $0 -u S3_BACKUP_URL -e S3_ENDPOINT -v VOLUME_NAME -n SERVICE_NAME -f COMPOSE_FILEPATH -c REPLACE_CONF -o OVERRIDE_VOLUME -V NEW_VOLUME_NAME" >&2
        exit 1;;
   esac
