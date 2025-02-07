@@ -27,23 +27,24 @@ check_args() {
 
 # Function to up docker compose service and promote database to master
 up_db() {
-    # Up container
-    docker compose -f $compose_filepath up -d $service
-    sleep ${1:-5}
-    # Promote master
-    echo "Promoting database"
-    docker compose -f $compose_filepath exec -u postgres $service bash -c "pg_ctl promote"
+  # Up container
+  docker compose -f $compose_filepath up -d $service
+  sleep ${1:-5}
+  # Promote master
+  echo "Promoting database"
+  docker compose -f $compose_filepath exec -u postgres $service bash -c "pg_ctl promote"
 }
 
 # Function odo
 run_odo() {
-      docker run -t --rm \
-      -e AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY \
-      -e AWS_SECRET_ACCESS_KEY=$AWS_SECRET_KEY \
-      -e AWS_DEFAULT_REGION=$AWS_REGION \
-      -e S3_BACKUP_URL=$s3_url \
-      -e S3_ENDPOINT=$s3_endpoint \
-      -v ${1:-"ODO_STANDBY_VOLUME"}:/data odo:$odo_version
+  echo "Starting odo"
+  docker run -t --rm \
+  -e AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY \
+  -e AWS_SECRET_ACCESS_KEY=$AWS_SECRET_KEY \
+  -e AWS_DEFAULT_REGION=$AWS_REGION \
+  -e S3_BACKUP_URL=$s3_url \
+  -e S3_ENDPOINT=$s3_endpoint \
+  -v ${1:-"ODO_STANDBY_VOLUME"}:/data odo:$odo_version
 }
 
 # Function replace conf
@@ -55,6 +56,14 @@ replace_configuration() {
     # restart container
     docker compose -f $compose_filepath restart -d $service
   fi
+}
+
+# Function recreate compose volume name
+get_full_volume_name() {
+  # Get compose folder prefix and add it to new_volume_name
+  folder_name=$(echo "$compose_filepath" | sed -E 's/.*\/(\w+)\/[^\/]*\.ya?ml$/\1/')
+  new_compose_vol_name=${folder_name}_${1}
+  echo "$new_compose_vol_name"
 }
 
 # Load env
@@ -100,7 +109,8 @@ if $override_volume; then
   check_args
 fi
 
-if $new_volume_name; then
+
+if [[ -n "$new_volume_name" ]]; then
   if (( $mode != 0 )); then
     echo "Usage error, you can't use -V and -o or -S at the same time"
     exit 1
@@ -123,7 +133,7 @@ if $replace_conf; then
   fi
 fi
 
-case $mode in:
+case $mode in
   0)
     # check if a recovery mode is selected
     echo "Please specify the recovery mode by using either -o, -V or -S"
@@ -141,9 +151,10 @@ case $mode in:
     # Run recovery in override mode
     # Down container
     docker compose -f $compose_filepath down $service
-    # Run side container --rm + mount volume
-    # Odo handles the restoration of the backup
-    run_odo $volume_name
+    
+    vol_name=$(get_full_volume_name $volume_name)
+    # Odo handles the restoration of the backup 
+    run_odo $vol_name
     up_db 
     replace_configuration
     ;;
@@ -156,12 +167,7 @@ case $mode in:
     sed -i.bak "s/$volume_name/$new_volume_name/g" $compose_filepath
     docker compose -f $compose_filepath up -d $service
     docker compose -f $compose_filepath down $service
-    # Get compose folder prefix and add it to new_volume_name
-    folder_name=$(echo "$compose_filepath" | sed -E 's/.*\/(\w+)\/[^\/]*\.ya?ml$/\1/')
-    echo "folder_name=$folder_name"
-    new_compose_vol_name=${folder_name}_${new_volume_name}
-    echo "new_compose_vol_name=$new_compose_vol_name"
-    # Run side container --rm + mount volume
+    new_compose_vol_name=$(get_full_volume_name $new_volume_name)
     # Odo handles the restoration of the backup
     echo "Starting ODO"
     run_odo $new_compose_vol_name
