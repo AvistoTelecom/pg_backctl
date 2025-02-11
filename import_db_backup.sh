@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Boolean default values
+# variables default values
 replace_conf=false
 override_volume=false
 replace_conf=false
@@ -24,7 +24,25 @@ check_args() {
     exit 1
   fi
 }
-
+# Check local backup
+check_local() {
+  if [ ! -e "$backup_path/base.tar.gz"] || [ ! -e "$backup_path/pg_wal.tar.gz" ]; then
+    echo "Error: Missing files, your local folder should contain base.tar.gz and pg_wal.tar.gz"
+    exit 1 
+  fi
+}
+# check if AWS or local backup + run differents checks
+check_backup() {
+  if [ -z "$backup_path" ]; then
+    if [ -z "$AWS_ACCESS_KEY" ] || [ -z "$AWS_SECRET_KEY" ] || [ -z "$AWS_REGION" ]; then
+      echo "Usage error, you can't use -P and a + s + r + u + e in the same time. You need to choose between local backup mode and AWS backup mode." 
+      exit 1
+    fi
+    check_local
+  else
+    check_aws
+    check_args
+}
 # Function to up docker compose service and promote database to master
 up_db() {
   # Up container
@@ -35,15 +53,23 @@ up_db() {
   docker compose -f $compose_filepath exec -u postgres $service bash -c "pg_ctl promote"
 }
 
-# Function odo
+# Function odo with S3 storage
 run_odo() {
-  echo "Starting odo"
+  echo "Starting odo in S3 mode"
   docker run -t --rm \
   -e AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY \
   -e AWS_SECRET_ACCESS_KEY=$AWS_SECRET_KEY \
   -e AWS_DEFAULT_REGION=$AWS_REGION \
   -e S3_BACKUP_URL=$s3_url \
   -e S3_ENDPOINT=$s3_endpoint \
+  -v ${1:-"ODO_STANDBY_VOLUME"}:/data $odo_image
+}
+# Function odo with local storage
+run_local() {
+  echo "Starting odo in local backup mode"
+  docker run -t --rm \
+  -e backup_path=$backup_path \
+  -v $backup_path:/backup \
   -v ${1:-"ODO_STANDBY_VOLUME"}:/data $odo_image
 }
 
@@ -73,7 +99,7 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 
 # Parse command line arguments
-while getopts "asru:e:v:n:f:coV:p:SO:" opt; do
+while getopts "asru:e:v:n:f:coV:p:SO:P:" opt; do
   case $opt in
     a) AWS_ACCESS_KEY="$OPTARG";;
     s) AWS_SECRET_KEY="$OPTARG";;
@@ -89,6 +115,7 @@ while getopts "asru:e:v:n:f:coV:p:SO:" opt; do
     p) pgversion="$OPTARG";;
     S) standby=true;;
     O) odo_image="$OPTARG";;
+    P) backup_path="$OPTARG";;
     ?) echo "Usage: $0 -u S3_BACKUP_URL -e S3_ENDPOINT -v VOLUME_NAME -n SERVICE_NAME -f COMPOSE_FILEPATH -c REPLACE_CONF -o OVERRIDE_VOLUME -V NEW_VOLUME_NAME" >&2
        exit 1;;
   esac
@@ -96,6 +123,7 @@ done
 
 if $standby; then
   mode=1
+  check_backup
 fi
 
 if $override_volume; then
@@ -105,8 +133,7 @@ if $override_volume; then
   fi
   # Check parameter for override_volume mode
   mode=2
-  check_aws
-  check_args
+  check_backup
 fi
 
 
@@ -116,8 +143,7 @@ if [[ -n "$new_volume_name" ]]; then
     exit 1
   fi
   mode=3
-  check_aws
-  check_args
+  check_backup
   if [ $volume_name == $new_volume_name ]; then
     echo "You need to specify a new volume name different from actual volume name"
     exit 1
@@ -141,8 +167,13 @@ case $mode in
     ;;
   1)
     # Run in standby mode
-    run_odo
-
+    # run in local or aws mode
+    echo "Starting ODO"
+    if [ -z "$backup_path" ]; then
+      run_local
+    else
+      run_odo
+    fi
     docker run -d --rm \
     -v ODO_STANDBY_VOLUME:/var/lib/postgresql/data \
     postgres:$pgversion
@@ -153,8 +184,14 @@ case $mode in
     docker compose -f $compose_filepath down $service
     
     vol_name=$(get_full_volume_name $volume_name)
-    # Odo handles the restoration of the backup 
-    run_odo $vol_name
+    # Odo handles the restoration of the backup
+    # run in local or aws mode
+    echo "starting ODO"
+    if [ -z "$backup_path" ]; then
+      run_local $vol_name
+    else
+      run_odo $vol_name
+    fi
     up_db 
     replace_configuration
     ;;
@@ -169,8 +206,13 @@ case $mode in
     docker compose -f $compose_filepath down $service
     new_compose_vol_name=$(get_full_volume_name $new_volume_name)
     # Odo handles the restoration of the backup
+    # run in local or aws mode
     echo "Starting ODO"
-    run_odo $new_compose_vol_name
+    if [ -z "$backup_path" ]; then
+      run_local $new_compose_vol_name
+    else
+      run_odo $new_compose_vol_name
+    fi
     up_db
     replace_configuration
     ;;
