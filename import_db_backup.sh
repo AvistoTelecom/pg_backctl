@@ -33,9 +33,9 @@ check_local() {
 }
 # check if AWS or local backup + run differents checks
 check_backup() {
-  if [ -n "$backup_path" ]; then  
-    if [ -z "$AWS_ACCESS_KEY" ] || [ -z "$AWS_SECRET_KEY" ] || [ -z "$AWS_REGION" ]; then
-      echo "Usage error, you can't use -P and a + s + r + u + e in the same time. You need to choose between local backup mode and AWS backup mode." 
+  if [ -n "$backup_path" ]; then
+    if [ -n "$s3_url" ] || [ -n "$s3_endpoint" ]; then
+      echo "Usage error, you can't use -P (local backup) and -u, -e (S3 option) together. You need to choose between local backup mode and S3 backup mode." 
       exit 1
     fi
     check_local
@@ -70,9 +70,6 @@ run_odo() {
 run_local() {
   echo "Starting odo in local backup mode"
   
-  echo "$backup_path"
-  echo "$PWD"
-
   docker run -t --rm \
   -e backup_path=$backup_path \
   -v $backup_path:/backup \
