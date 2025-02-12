@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # Check if $backup_path is provide
-if [ -z "$backup_path" ]; then
-  echo "running in local_backup mode"
-else  
+if [ -n "$backup_path" ]; then
+  echo "Running in local_backup mode"
+ else
   echo "running in aws mode"
   # Configure AWS credentials
   aws configure set aws_access_key_id ${AWS_ACCESS_KEY_ID}

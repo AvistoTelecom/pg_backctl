@@ -26,14 +26,14 @@ check_args() {
 }
 # Check local backup
 check_local() {
-  if [ ! -e "$backup_path/base.tar.gz"] || [ ! -e "$backup_path/pg_wal.tar.gz" ]; then
+  if [ ! -e "$backup_path/base.tar.gz" ] || [ ! -e "$backup_path/pg_wal.tar.gz" ]; then
     echo "Error: Missing files, your local folder should contain base.tar.gz and pg_wal.tar.gz"
     exit 1 
   fi
 }
 # check if AWS or local backup + run differents checks
 check_backup() {
-  if [ -z "$backup_path" ]; then
+  if [ -n "$backup_path" ]; then  
     if [ -z "$AWS_ACCESS_KEY" ] || [ -z "$AWS_SECRET_KEY" ] || [ -z "$AWS_REGION" ]; then
       echo "Usage error, you can't use -P and a + s + r + u + e in the same time. You need to choose between local backup mode and AWS backup mode." 
       exit 1
@@ -43,6 +43,7 @@ check_backup() {
   else
     check_aws
     check_args
+  fi
 }
 # Function to up docker compose service and promote database to master
 up_db() {
@@ -68,6 +69,10 @@ run_odo() {
 # Function odo with local storage
 run_local() {
   echo "Starting odo in local backup mode"
+  
+  echo "$backup_path"
+  echo "$PWD"
+
   docker run -t --rm \
   -e backup_path=$backup_path \
   -v $backup_path:/backup \
@@ -170,7 +175,7 @@ case $mode in
     # Run in standby mode
     # run in local or aws mode
     echo "Starting ODO"
-    if [ -z "$backup_path" ]; then
+    if [ -n "$backup_path" ]; then
       run_local
     else
       run_odo
@@ -188,7 +193,7 @@ case $mode in
     # Odo handles the restoration of the backup
     # run in local or aws mode
     echo "starting ODO"
-    if [ -z "$backup_path" ]; then
+    if [ -n "$backup_path" ]; then
       run_local $vol_name
     else
       run_odo $vol_name
@@ -209,7 +214,7 @@ case $mode in
     # Odo handles the restoration of the backup
     # run in local or aws mode
     echo "Starting ODO"
-    if [ -z "$backup_path" ]; then
+    if [ -n "$backup_path" ]; then
       run_local $new_compose_vol_name
     else
       run_odo $new_compose_vol_name
