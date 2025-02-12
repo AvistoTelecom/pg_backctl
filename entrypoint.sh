@@ -4,6 +4,7 @@
 if [ -z "$backup_path" ]; then
   echo "running in local_backup mode"
 else  
+  echo "running in aws mode"
   # Configure AWS credentials
   aws configure set aws_access_key_id ${AWS_ACCESS_KEY_ID}
   aws configure set aws_secret_access_key ${AWS_SECRET_ACCESS_KEY}
