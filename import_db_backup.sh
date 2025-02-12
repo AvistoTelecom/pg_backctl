@@ -11,14 +11,14 @@ odo_image="odo:latest"
 
 # Function check AWS
 check_aws() {
-  if [ -z "$AWS_ACCESS_KEY" ] || [ -z "$AWS_SECRET_KEY" ] || [ -z "$AWS_REGION" ]; then
+  if [ -z "$AWS_ACCESS_KEY" ] || [ -z "$AWS_SECRET_KEY" ] || [ -z "$AWS_REGION" ] || [ -z "$s3_url" ] || [ -z "$s3_endpoint" ]; then
     echo "Error: Missing info in .env. Ensure you have set AWS_ACCESS_KEY, AWS_SECRET_KEY and AWS_REGION."
     exit 1
   fi
 }
 # Function arguments
 check_args() {
-  if [ -z "$s3_url" ] || [ -z "$s3_endpoint" ] || [ -z "$volume_name" ] || [ -z "$service" ] || [ -z "$compose_filepath" ]; then
+  if [ -z "$volume_name" ] || [ -z "$service" ] || [ -z "$compose_filepath" ]; then
     echo "Error: Missing required arguments"
     echo "Usage: $0 -u S3_BACKUP_URL -e S3_ENDPOINT -v VOLUME_NAME -n SERVICE_NAME -f COMPOSE_FILEPATH"
     exit 1
@@ -39,6 +39,7 @@ check_backup() {
       exit 1
     fi
     check_local
+    check_args
   else
     check_aws
     check_args
