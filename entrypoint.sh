@@ -28,7 +28,7 @@ if [ -n "$backup_path" ]; then
   folder="${key%/*}/"
   
   # Get content of the latest base backup
-  aws s3 cp ${S3_BACKUP_URL}/${folder} . --endpoint ${S3_ENDPOINT} --recursive
+  aws s3 cp ${S3_BACKUP_URL}/${folder} /backup/ --endpoint ${S3_ENDPOINT} --recursive
 
 fi
 
