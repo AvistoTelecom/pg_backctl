@@ -15,12 +15,13 @@ if [ -n "$backup_path" ]; then
   bucket="${bucket%/}"
 
   # Get latest base backup directory
+  # TODO add --prefix in odo args
   key=$(aws s3api list-objects-v2 \
-  --bucket ${bucket}
-  --endpoint ${S3_ENDPOINT}
-  --prefix postgresql-cluster/base/ # TODO add arg in odo
-  --region ${AWS_DEFAULT_REGION}
-  --output text
+  --bucket ${bucket} \
+  --endpoint ${S3_ENDPOINT} \
+  --prefix postgresql-cluster/base/ \ 
+  --region ${AWS_DEFAULT_REGION} \
+  --output text \
   --query "reverse(sort_by(Contents,&LastModified))[0].Key")
 
   # Clean returned key to get the folder
