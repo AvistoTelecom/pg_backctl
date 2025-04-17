@@ -9,8 +9,26 @@ if [ -n "$backup_path" ]; then
   aws configure set aws_access_key_id ${AWS_ACCESS_KEY_ID}
   aws configure set aws_secret_access_key ${AWS_SECRET_ACCESS_KEY}
   aws configure set default.region ${AWS_DEFAULT_REGION}
-  # Download backup from S3
-  aws s3 cp ${S3_BACKUP_URL} /backup/ --recursive --endpoint ${S3_ENDPOINT}
+  
+  # Get bucket name from s3 url
+  bucket="${S3_BACKUP_URL#s3://}"
+  bucket="${bucket%/}"
+
+  # Get latest base backup directory
+  key=$(aws s3api list-objects-v2 \
+  --bucket ${bucket}
+  --endpoint ${S3_ENDPOINT}
+  --prefix postgresql-cluster/base/ # TODO add arg in odo
+  --region ${AWS_DEFAULT_REGION}
+  --output text
+  --query "reverse(sort_by(Contents,&LastModified))[0].Key")
+
+  # Clean returned key to get the folder
+  folder="${key%/*}/"
+  
+  # Get content of the latest base backup
+  aws s3 cp ${S3_BACKUP_URL}/${folder} . --endpoint ${S3_ENDPOINT} --recursive
+
 fi
 
 
