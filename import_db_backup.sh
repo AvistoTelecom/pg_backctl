@@ -96,7 +96,9 @@ get_full_volume_name() {
 }
 
 # Load env
-ENV_FILE=".env"
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &>/dev/null && pwd )"
+ENV_FILE="$SCRIPT_DIR/.env"
+echo "Getting env from: $ENV_FILE"
 if [[ -f "$ENV_FILE" ]]; then
   export $(grep -v '^#' "$ENV_FILE" | xargs)
 fi
