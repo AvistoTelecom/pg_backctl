@@ -1,9 +1,8 @@
 #!/bin/bash
 
 # variables default values
-replace_conf=false
 override_volume=false
-replace_conf=false
+replace_conf=""
 pgversion="latest"
 mode=0
 standby=false
@@ -79,11 +78,11 @@ run_local() {
 # Function replace conf
 replace_configuration() {
   # Check if replace_conf == true
-  if $replace_conf; then
+  if [ -n "$replace_conf" ]; then
     # Alter config
-    docker compose -f $compose_filepath cp ./confs/postgresql.auto.conf $service:/var/lib/postgresql/data/postgresql.auto.conf
+    docker compose -f $compose_filepath cp $replace_conf $service:/var/lib/postgresql/data/postgresql.auto.conf
     # restart container
-    docker compose -f $compose_filepath restart -d $service
+    docker compose -f $compose_filepath restart $service
   fi
 }
 
@@ -97,14 +96,14 @@ get_full_volume_name() {
 
 # Load env
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &>/dev/null && pwd )"
+echo $SCRIPT_DIR
 ENV_FILE="$SCRIPT_DIR/.env"
-echo "Getting env from: $ENV_FILE"
 if [[ -f "$ENV_FILE" ]]; then
   export $(grep -v '^#' "$ENV_FILE" | xargs)
 fi
 
 # Parse command line arguments
-while getopts "asru:e:v:n:f:coV:p:SO:P:" opt; do
+while getopts "asru:e:v:n:f:c:oV:p:SO:P:" opt; do
   case $opt in
     a) AWS_ACCESS_KEY="$OPTARG";;
     s) AWS_SECRET_KEY="$OPTARG";;
@@ -114,7 +113,7 @@ while getopts "asru:e:v:n:f:coV:p:SO:P:" opt; do
     v) volume_name="$OPTARG";;
     n) service="$OPTARG";;
     f) compose_filepath="$OPTARG";;
-    c) replace_conf=true;;
+    c) replace_conf=$OPTARG;;
     o) override_volume=true;;
     V) new_volume_name="$OPTARG";;
     p) pgversion="$OPTARG";;
@@ -130,7 +129,7 @@ if $standby; then
   mode=1
   check_backup
 fi
-
+echo $override_volume
 if $override_volume; then
   if (( $mode != 0 )); then
     echo "Usage error, you can't use -o and -S at the same time"
@@ -156,9 +155,9 @@ if [[ -n "$new_volume_name" ]]; then
 fi
 
 # Check if replace_conf is true and postgresql.auto.conf is provided
-if $replace_conf; then
+if [ -n "$replace_conf" ]; then
     echo "REPLACE CONF"
-    if [ ! -e ./confs/postgresql.auto.conf ]; then
+    if [ ! -e $replace_conf ]; then
       echo "option -c to replace config is set to true but postgresql.auto.conf is missing"
       exit 1
   fi
@@ -187,7 +186,7 @@ case $mode in
     # Run recovery in override mode
     # Down container
     docker compose -f $compose_filepath down $service
-    
+
     vol_name=$(get_full_volume_name $volume_name)
     # Odo handles the restoration of the backup
     # run in local or aws mode
@@ -197,7 +196,7 @@ case $mode in
     else
       run_odo $vol_name
     fi
-    up_db 
+    up_db
     replace_configuration
     ;;
   3)
@@ -222,5 +221,3 @@ case $mode in
     replace_configuration
     ;;
 esac
- 
-
