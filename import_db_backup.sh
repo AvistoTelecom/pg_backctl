@@ -2,6 +2,24 @@
 
 set -euo pipefail
 
+# Error codes
+ERR_MISSING_CONF=3      # -c used but postgresql.auto.conf missing
+ERR_UNSAFE_VOLUME=4     # Unsafe volume operation
+ERR_MISSING_CMD=10      # Required command not found
+ERR_MISSING_ENV=11      # Missing required environment variable
+ERR_MISSING_ARG=12      # Missing required argument
+ERR_LOCAL_BACKUP=13     # Local backup files missing
+ERR_USAGE=14            # Usage error (bad arg combination)
+ERR_UNKNOWN=99          # Unknown error
+
+# Print error and exit with code
+die() {
+  local msg="$1"
+  local code="${2:-$ERR_UNKNOWN}"
+  echo "Error: $msg" >&2
+  exit "$code"
+}
+
 # variables default values
 override_volume=false
 replace_conf=""
@@ -9,6 +27,13 @@ pgversion="latest"
 mode=0
 standby=false
 odo_image="odo:latest"
+
+# Check for required external commands
+for cmd in docker sed grep; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    die "Required command '$cmd' not found in PATH. Please install it before running this script." $ERR_MISSING_CMD
+  fi
+done
 
 # Print usage/help
 usage() {
@@ -32,37 +57,45 @@ Options:
   -s AWS_SECRET_KEY     AWS secret key
   -r AWS_REGION         AWS region
   -h, --help            Show this help message and exit
+
+Examples:
+  # Restore from S3 backup, override current volume
+  $0 -u s3://bucket -e https://s3.endpoint -v db-volume-name -n db-service-name -f /path/to/docker-compose.yml -o
+
+  # Restore from S3 backup, create new volume
+  $0 -u s3://bucket -e https://s3.endpoint -v db-volume-name -n db-service-name -f /path/to/docker-compose.yml -V new-db-volume-name
+
+  # Restore from local backup
+  $0 -P /path/to/backup -v db-volume-name -n db-service-name -f /path/to/docker-compose.yml -o
+
+  # Replace Postgres config after restore
+  $0 -u s3://bucket -e https://s3.endpoint -v db-volume-name -n db-service-name -f /path/to/docker-compose.yml -c confs/postgresql.auto.conf -o
 EOF
 }
 
 # Function check AWS
 check_aws() {
   if [ -z "${AWS_ACCESS_KEY:-}" ] || [ -z "${AWS_SECRET_KEY:-}" ] || [ -z "${AWS_REGION:-}" ] || [ -z "${s3_url:-}" ] || [ -z "${s3_endpoint:-}" ]; then
-    echo "Error: Missing info in .env. Ensure you have set AWS_ACCESS_KEY, AWS_SECRET_KEY and AWS_REGION."
-    exit 1
+    die "Missing info in .env. Ensure you have set AWS_ACCESS_KEY, AWS_SECRET_KEY and AWS_REGION." $ERR_MISSING_ENV
   fi
 }
 # Function arguments
 check_args() {
   if [ -z "${volume_name:-}" ] || [ -z "${service:-}" ] || [ -z "${compose_filepath:-}" ]; then
-    echo "Error: Missing required arguments"
-    usage
-    exit 1
+    die "Missing required arguments" $ERR_MISSING_ARG
   fi
 }
 # Check local backup
 check_local() {
   if [ ! -e "${backup_path:-}/base.tar.gz" ] || [ ! -e "${backup_path:-}/pg_wal.tar.gz" ]; then
-    echo "Error: Missing files, your local folder should contain base.tar.gz and pg_wal.tar.gz"
-    exit 1 
+    die "Missing files, your local folder should contain base.tar.gz and pg_wal.tar.gz" $ERR_LOCAL_BACKUP
   fi
 }
 # check if AWS or local backup + run differents checks
 check_backup() {
   if [ -n "${backup_path:-}" ]; then
     if [ -n "${s3_url:-}" ] || [ -n "${s3_endpoint:-}" ]; then
-      echo "Usage error, you can't use -P (local backup) and -u, -e (S3 option) together. You need to choose between local backup mode and S3 backup mode." 
-      exit 1
+      die "You can't use -P (local backup) and -u, -e (S3 option) together. Choose between local backup mode and S3 backup mode." $ERR_USAGE
     fi
     check_local
     check_args
@@ -120,11 +153,14 @@ get_full_volume_name() {
   echo "$new_compose_vol_name"
 }
 
-# Load env
+# Robust env loading
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &>/dev/null && pwd )"
 ENV_FILE="$SCRIPT_DIR/.env"
 if [[ -f "$ENV_FILE" ]]; then
-  export $(grep -v '^#' "$ENV_FILE" | xargs)
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
 fi
 
 # Parse command line arguments
@@ -159,8 +195,7 @@ fi
 echo $override_volume
 if $override_volume; then
   if (( $mode != 0 )); then
-    echo "Usage error, you can't use -o and -S at the same time"
-    exit 1
+    die "You can't use -o and -S at the same time" $ERR_USAGE
   fi
   # Check parameter for override_volume mode
   mode=2
@@ -170,14 +205,12 @@ fi
 
 if [[ -n "${new_volume_name:-}" ]]; then
   if (( mode != 0 )); then
-    echo "Usage error, you can't use -V and -o or -S at the same time"
-    exit 1
+    die "You can't use -V and -o or -S at the same time" $ERR_USAGE
   fi
   mode=3
   check_backup
   if [ "${volume_name:-}" == "${new_volume_name:-}" ]; then
-    echo "You need to specify a new volume name different from actual volume name"
-    exit 1
+    die "You need to specify a new volume name different from actual volume name" $ERR_USAGE
   fi
 fi
 
@@ -185,8 +218,7 @@ fi
 if [ -n "$replace_conf" ]; then
     echo "l.187 - REPLACE CONF"
     if [ ! -e "$replace_conf" ]; then
-      echo "option -c to replace config is set to true but postgresql.auto.conf is missing"
-      exit 1
+      die "option -c to replace config is set to true but postgresql.auto.conf is missing" $ERR_MISSING_CONF
   fi
 fi
 
@@ -247,4 +279,7 @@ case $mode in
     up_db
     replace_configuration
     ;;
+  *)
+  die "Unknown error or mode" $ERR_UNKNOWN
+  ;;
 esac

@@ -12,7 +12,26 @@
 
 # Usage
 ```bash
-./import_db_backup.sh -u S3_BACKUP_URL -e S3_ENDPOINT -v VOLUME_NAME -n SERVICE_NAME -f COMPOSE_FILEPATH -c REPLACE_CONF -o OVERRIDE_VOLUME -V NEW_VOLUME_NAME
+# Restore from S3 backup, override current volume (not recommended for production)
+./import_db_backup.sh -u s3://mybucket/backup -e https://s3.myprovider.com -v db-volume-name -n db-service-name -f docker-compose.yml -o
+
+# Restore from S3 backup, create a new volume (recommended for production)
+./import_db_backup.sh -u s3://mybucket/backup -e https://s3.myprovider.com -v db-volume-name -n db-service-name -f docker-compose.yml -V restored-db-volume-name
+
+# Restore from local backup directory
+./import_db_backup.sh -P /backups/2025-05-20 -v db-volume-name -n db-service-name -f docker-compose.yml -o
+
+# Restore from S3 and override config after restore
+./import_db_backup.sh -u s3://mybucket/backup -e https://s3.myprovider.com -v db-volume-name -n db-service-name -f docker-compose.yml -c confs/postgresql.auto.conf -o
+
+# Restore from S3, create new volume, and override config
+./import_db_backup.sh -u s3://mybucket/backup -e https://s3.myprovider.com -v db-volume-name -n db-service-name -f docker-compose.yml -V restored-db-volume-name -c confs/postgresql.auto.conf
+
+# Standby mode restore (for creating a standby/replica)
+./import_db_backup.sh -u s3://mybucket/backup -e https://s3.myprovider.com -v db-volume-name -n db-service-name -f docker-compose.yml -S
+
+# Use a custom ODO image and Postgres version
+./import_db_backup.sh -u s3://mybucket/backup -e https://s3.myprovider.com -v db-volume-name -n db-service-name -f docker-compose.yml -V restored-db-volume-name -O myrepo/odo:latest -p 15
 ```
 ### Args
 - -u: S3 backup URL
@@ -68,14 +87,53 @@ The old compose file will also be preserved by adding a .bak suffix to the origi
 
 
 ### Error codes
-#### code 3
-Fires when using the arg `-c` that is used to override postgresql configuration. 
-You get this error when there is no file named `postgresql.auto.conf` in the folder `confs`.
+| Code | Meaning                                                                 |
+|------|-------------------------------------------------------------------------|
+| 3    | -c used but postgresql.auto.conf missing (see confs/postgresql.auto.conf) |
+| 4    | Unsafe volume operation (e.g. -o and -S or -V and -o/-S together)         |
+| 10   | Required command not found (docker, sed, grep, etc.)                      |
+| 11   | Missing required environment variable (AWS keys, region, etc.)            |
+| 12   | Missing required argument (volume, service, compose file, etc.)           |
+| 13   | Local backup files missing (base.tar.gz or pg_wal.tar.gz)                 |
+| 14   | Usage error (bad argument combination, e.g. -P with -u/-e)                |
+| 99   | Unknown error or mode                                                     |
 
-#### code 4
-Fires when you have started ODO with unsafe volume parameters.
-By default ODO will create a new volume an expect a new volume name passed with the arg `-V` (capital "v")
-The other way is to use `-o` to switch to override mode and the acutal volume will be cleaned and used for the restoration
+**All errors print a clear message to stderr before exiting with the code above.**
+
+#### Error code details and troubleshooting:
+- **3**: `-c` was used to override the Postgres config, but the file `postgresql.auto.conf` was not found in the `confs/` folder.
+  - **Why:** The script expects this file to exist if you use `-c`.
+  - **How to fix:** Place your desired `postgresql.auto.conf` in the `confs/` directory or specify the correct path with `-c`.
+
+- **4**: Unsafe volume operation. You tried to use mutually exclusive options (e.g. `-o` and `-S`, or `-V` with `-o`/`-S`).
+  - **Why:** These options cannot be combined for safety reasons (to avoid accidental data loss or ambiguous actions).
+  - **How to fix:** Use only one of these options at a time. For production, prefer `-V` to create a new volume.
+
+- **10**: A required command (such as `docker`, `sed`, or `grep`) is not installed or not in your `PATH`.
+  - **Why:** The script relies on these tools to function.
+  - **How to fix:** Install the missing command using your package manager (e.g. `apt install docker sed grep`).
+
+- **11**: One or more required environment variables are missing (e.g. AWS credentials or region).
+  - **Why:** The script needs these variables to access S3 and perform operations.
+  - **How to fix:** Ensure your `.env` file is present and contains `AWS_ACCESS_KEY`, `AWS_SECRET_KEY`, and `AWS_REGION`.
+
+- **12**: A required argument is missing (e.g. volume name, service name, or compose file path).
+  - **Why:** The script cannot proceed without these essential details.
+  - **How to fix:** Provide all required arguments as shown in the usage examples.
+
+- **13**: Local backup files are missing (`base.tar.gz` or `pg_wal.tar.gz` not found in the specified backup path).
+  - **Why:** The script expects both files for a valid local backup restore.
+  - **How to fix:** Ensure both files exist in the backup directory you specify with `-P`.
+
+- **14**: Usage error. You provided an invalid or conflicting combination of arguments (e.g. using `-P` with `-u`/`-e`).
+  - **Why:** Some options are mutually exclusive or require specific combinations.
+  - **How to fix:** Review your command and use only compatible options together. See the usage examples above.
+
+- **99**: An unknown error or invalid mode was encountered.
+  - **Why:** This is a catch-all for unexpected situations.
+  - **How to fix:** Double-check your arguments and environment. If the problem persists, review the script or open an issue.
+
+If you encounter an error, check the message printed to stderr for details and refer to the table and explanations above to understand and resolve the exit code.
 
 ## Docker image overview
 When run, the docker image expects 4 environment variables:
@@ -153,7 +211,7 @@ ODO is started on the db volume in order to perform the following steps:
 2. [ ] **Mount the S3 volume instead of downloading it** 🚀
 3. [ ] **Support for specific backup selection instead of latest** 🔖
 4. [x] Add an arg to create a new volume. 
-	1. [ ] Have a secondary mod to mount a temporary DB
+	1. [x] Have a secondary mod to mount a temporary DB
 5. [ ] Fetch backups from other sources than a S3
 6. [ ] Improve Documentation
 	1. [ ] Use cases
