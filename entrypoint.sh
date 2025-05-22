@@ -59,8 +59,6 @@ restore_backup() {
   echo "Restoring base backup..."
   tar -jxvf /backup/data.tar.bz2 -C /data/
 
-  echo "" > /data/custom.conf
-  echo "" > /data/override.conf
   touch /data/recovery.signal
   chown -R 999:999 /data
 }
