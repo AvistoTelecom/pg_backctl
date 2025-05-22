@@ -12,17 +12,18 @@ ERR_LOCAL_BACKUP=13     # Local backup files missing
 ERR_USAGE=14            # Usage error (bad arg combination)
 ERR_UNKNOWN=99          # Unknown error
 
-# Print error and exit with code
+# Print error and exit with code 
 die() {
   local msg="$1"
   local code="${2:-$ERR_UNKNOWN}"
-  echo "Error: $msg" >&2
+  echo "Error $code: $msg" >&2
   exit "$code"
 }
 
 # variables default values
 override_volume=false
 replace_conf=""
+replace_init_conf=""
 pgversion="latest"
 mode=0
 standby=false
@@ -106,13 +107,16 @@ check_backup() {
 }
 # Function to up docker compose service and promote database to master
 up_db() {
-  local sleep_time="${1:-5}"
+  local sleep_time="10"
   # Up container
   docker compose -f "$compose_filepath" up -d "$service"
+
+  if [ -n "$replace_init_conf" ]; then
+    replace_init_configuration
+  fi
+  
+  echo "Sleeping for $sleep_time seconds to allow the database to start..."
   sleep "$sleep_time"
-  # Promote master
-  echo "Promoting database"
-  docker compose -f "$compose_filepath" exec -u postgres "$service" bash -c "pg_ctl promote"
 }
 
 # Function odo with S3 storage
@@ -137,6 +141,13 @@ run_local() {
   -v "$vol":/data "$odo_image"
 }
 
+replace_init_configuration() {
+  if [ -n "$replace_init_conf" ]; then
+    docker compose -f "$compose_filepath" cp "$replace_init_conf" "$service":/var/lib/postgresql/data/postgresql.auto.conf
+    docker compose -f "$compose_filepath" restart "$service"
+  fi
+}
+
 # Function replace conf
 replace_configuration() {
   if [ -n "$replace_conf" ]; then
@@ -148,7 +159,7 @@ replace_configuration() {
 # Function recreate compose volume name
 get_full_volume_name() {
   local folder_name
-  folder_name=$(echo "$compose_filepath" | sed -E 's#.*/(\w+)/[^/]*\\.ya?ml$#\1#')
+  folder_name=$(basename "$(dirname "$compose_filepath")")
   local new_compose_vol_name="${folder_name}_$1"
   echo "$new_compose_vol_name"
 }
@@ -192,7 +203,7 @@ if $standby; then
   mode=1
   check_backup
 fi
-echo $override_volume
+
 if $override_volume; then
   if (( $mode != 0 )); then
     die "You can't use -o and -S at the same time" $ERR_USAGE
@@ -243,20 +254,48 @@ case $mode in
     ;;
   2)
     # Run recovery in override mode
+
+    # Check if service is running ? => if not warn
+
     # Down container
     docker compose -f "$compose_filepath" down "$service"
 
+    echo "get docker compose volume name of $volume_name"
     vol_name=$(get_full_volume_name "$volume_name")
+
+    # Check if volume exists
+    if ! docker volume ls | grep -q "$vol_name"; then
+      die "Volume $vol_name does not exist" $ERR_UNSAFE_VOLUME
+    fi
+
     # Odo handles the restoration of the backup
     # run in local or aws mode
-    echo "starting ODO"
+    echo "starting ODO on $vol_name"
     if [ -n "${backup_path:-}" ]; then
       run_local "$vol_name"
     else
       run_odo "$vol_name"
     fi
-    up_db
-    replace_configuration
+
+
+    
+
+    # Build replace_init_conf from replace_conf if replace_conf is set
+    if [ -n "$replace_conf" ]; then
+      replace_init_conf="${replace_conf%.auto.conf}.init.auto.conf"
+      if [ -e "$replace_init_conf" ]; then
+      
+      up_db replace_init_conf
+      
+      replace_configuration
+      else
+        die "option -c to replace config is set to true but postgresql.auto.conf is missing" $ERR_MISSING_CONF
+      fi
+    else
+      # Up container
+      up_db
+    fi
+    
     ;;
   3)
     # Run recovery on new volume mode
