@@ -57,6 +57,7 @@ Options:
   -a AWS_ACCESS_KEY     AWS access key
   -s AWS_SECRET_KEY     AWS secret key
   -r AWS_REGION         AWS region
+  -H REPLACE_PG_HBA     Path to pg_hba.conf to replace
   -h, --help            Show this help message and exit
 
 Examples:
@@ -156,6 +157,14 @@ replace_configuration() {
   fi
 }
 
+# Function to copy pg_hba.conf into the container
+replace_pg_hba() {
+  if [ -n "$replace_pg_hba_conf" ]; then
+    docker compose -f "$compose_filepath" cp "$replace_pg_hba_conf" "$service":/var/lib/postgresql/data/pg_hba.conf
+    docker compose -f "$compose_filepath" restart "$service"
+  fi
+}
+
 # Function recreate compose volume name
 get_full_volume_name() {
   local folder_name
@@ -192,6 +201,7 @@ while [[ $# -gt 0 ]]; do
     -S) standby=true; shift;;
     -O) odo_image="$2"; shift 2;;
     -P) backup_path="$2"; shift 2;;
+    -H) replace_pg_hba_conf="$2"; shift 2;;
     -h|--help) usage; exit 0;;
     --) shift; break;;
     -*) echo "Unknown option: $1"; usage; exit 1;;
@@ -288,12 +298,14 @@ case $mode in
       up_db replace_init_conf
       
       replace_configuration
+      replace_pg_hba
       else
         die "option -c to replace config is set to true but postgresql.auto.conf is missing" $ERR_MISSING_CONF
       fi
     else
       # Up container
       up_db
+      replace_pg_hba
     fi
     
     ;;
@@ -317,6 +329,7 @@ case $mode in
     fi
     up_db
     replace_configuration
+    replace_pg_hba
     ;;
   *)
   die "Unknown error or mode" $ERR_UNKNOWN
