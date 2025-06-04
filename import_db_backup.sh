@@ -28,6 +28,7 @@ pgversion="latest"
 mode=0
 standby=false
 odo_image="odo:latest"
+replace_pg_hba_conf=""
 
 # Check for required external commands
 for cmd in docker sed grep; do
