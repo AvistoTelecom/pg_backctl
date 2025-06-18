@@ -11,7 +11,7 @@ for cmd in aws bzip2 tar grep sed; do
 done
 
 # Clean the volume
-echo "Cleaning /data volume..."
+echo "[ODO] Cleaning /data volume..."
 rm -rf /data/*
 
 fetch_wals() {
@@ -74,10 +74,10 @@ set_restore_command() {
 
 # Main logic
 if [[ -n "${backup_path:-}" ]]; then
-  echo "Running in local_backup mode"
+  echo "[ODO] local_backup mode"
   # You may want to add local WAL extraction here if needed
 else
-  echo "Running in aws mode"
+  echo "[ODO] Configuring S3 mode"
   aws configure set aws_access_key_id "$AWS_ACCESS_KEY_ID"
   aws configure set aws_secret_access_key "$AWS_SECRET_ACCESS_KEY"
   aws configure set default.region "$AWS_DEFAULT_REGION"

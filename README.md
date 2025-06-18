@@ -85,6 +85,16 @@ This option will lead to the compose file also being updated with the new volume
 The old volume will be preserved in case of error, you will need to clean it up manualy when no longer needed.
 The old compose file will also be preserved by adding a .bak suffix to the original version.
 
+#### -I: post init script
+Used to specify a folder containing SQL scripts to be executed **after the database is restored but before the recovery process completes**. 
+This is useful for running custom initialization, migrations, or data fixes automatically as part of the restore process.
+
+**How it works:**
+- All `.sql` files will be executed in alphabetical order.
+- Each script is executed using a user defined in the `.env` with the variable `POST_INIT_SCRIPT_USER` and `POST_INIT_SCRIPT_PASSWORD`.
+- Each script will run against the DB defined in the `.env` with the variable `POST_INIT_SCRIPT_DATABASE`.
+  You can override this value per-script by using the connect command in your script: example: `\c mydb`
+
 
 ### Error codes
 | Code | Meaning                                                                 |
