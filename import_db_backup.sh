@@ -29,6 +29,7 @@ mode=0
 standby=false
 odo_image="odo:latest"
 replace_pg_hba_conf=""
+post_init_conf=""
 
 # Check for required external commands
 for cmd in docker sed grep; do
@@ -59,6 +60,7 @@ Options:
   -s AWS_SECRET_KEY     AWS secret key
   -r AWS_REGION         AWS region
   -H REPLACE_PG_HBA     Path to pg_hba.conf to replace
+  -I POST_INIT_CONF     Path to a folder with custom scripts to run after restore
   -h, --help            Show this help message and exit
 
 Examples:
@@ -124,7 +126,7 @@ up_db() {
 # Function odo with S3 storage
 run_odo() {
   local vol="${1:-ODO_STANDBY_VOLUME}"
-  echo "Starting odo in S3 mode"
+  echo "> Starting restoration in S3 mode"
   docker run -t --rm \
   -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY" \
   -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_KEY" \
@@ -155,6 +157,41 @@ replace_configuration() {
   if [ -n "$replace_conf" ]; then
     docker compose -f "$compose_filepath" cp "$replace_conf" "$service":/var/lib/postgresql/data/postgresql.auto.conf
     docker compose -f "$compose_filepath" restart "$service"
+  fi
+}
+
+# Function to copy and execute post-init SQL scripts in the container
+post_init_script() {
+  if [ -n "$post_init_conf" ]; then
+    echo "Copying and running post-init SQL scripts from $post_init_conf..."
+
+    # Copy the folder into the container
+    docker compose -f "$compose_filepath" cp "$post_init_conf" "$service":/tmp/init-scripts/
+
+    # Get DB/user/password from env or set defaults
+    local db="${POST_INIT_SCRIPT_DATABASE:-postgres}"
+    local user="${POST_INIT_SCRIPT_USER:-postgres}"
+    local pass="${POST_INIT_SCRIPT_PASSWORD:-}"
+
+    # Export password for psql if provided
+    local pass_env=""
+    if [ -n "$pass" ]; then
+      pass_env="PGPASSWORD=$pass"
+    fi
+
+    # Execute each .sql script in alphabetical order
+    for script in $(find "$post_init_conf" -maxdepth 1 -type f -name "*.sql" | sort); do
+      filename=$(basename "$script")
+      echo "Executing script: $filename"
+      # Use docker compose exec to run psql inside the container
+      if [ -n "$pass" ]; then
+        docker compose -f "$compose_filepath" exec -T "$service" bash -c "PGPASSWORD='$pass' psql -U '$user' -d '$db' -f '/tmp/init-scripts/$filename'"
+      else
+        docker compose -f "$compose_filepath" exec -T "$service" psql -U "$user" -d "$db" -f "/tmp/init-scripts/$filename"
+      fi
+    done
+  else
+    echo "> Skiped: No post-init scripts provided in $post_init_conf"
   fi
 }
 
@@ -203,6 +240,7 @@ while [[ $# -gt 0 ]]; do
     -O) odo_image="$2"; shift 2;;
     -P) backup_path="$2"; shift 2;;
     -H) replace_pg_hba_conf="$2"; shift 2;;
+    -I) post_init_conf="$2"; shift 2;;
     -h|--help) usage; exit 0;;
     --) shift; break;;
     -*) echo "Unknown option: $1"; usage; exit 1;;
@@ -238,7 +276,6 @@ fi
 
 # Check if replace_conf is true and postgresql.auto.conf is provided
 if [ -n "$replace_conf" ]; then
-    echo "l.187 - REPLACE CONF"
     if [ ! -e "$replace_conf" ]; then
       die "option -c to replace config is set to true but postgresql.auto.conf is missing" $ERR_MISSING_CONF
   fi
@@ -281,25 +318,30 @@ case $mode in
 
     # Odo handles the restoration of the backup
     # run in local or aws mode
-    echo "starting ODO on $vol_name"
+    echo "> Starting ODO on $vol_name"
     if [ -n "${backup_path:-}" ]; then
       run_local "$vol_name"
     else
       run_odo "$vol_name"
     fi
-
-
-    
+    echo "> Basebackup restored to $vol_name"
 
     # Build replace_init_conf from replace_conf if replace_conf is set
     if [ -n "$replace_conf" ]; then
       replace_init_conf="${replace_conf%.auto.conf}.init.auto.conf"
       if [ -e "$replace_init_conf" ]; then
       
-      up_db replace_init_conf
+      echo "> Replacing postgresql.auto.conf with $replace_init_conf"
+      up_db
+
+      echo "> Replacing pg_hba.conf with $replace_pg_hba_conf"
+      replace_pg_hba # Moved this step first to ensure pg_hba.conf is updated before running post init scripts to avoid any access issues
+
+      echo "> Running post init scripts"
+      post_init_script
       
       replace_configuration
-      replace_pg_hba
+      
       else
         die "option -c to replace config is set to true but postgresql.auto.conf is missing" $ERR_MISSING_CONF
       fi
