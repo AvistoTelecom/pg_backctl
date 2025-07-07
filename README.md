@@ -1,3 +1,6 @@
+# ODO
+Restoring a base backup made easy. From fetching the right WALS to fine tunning your configuration to the new environment, ODO will provides you with many tools to restore your backups.
+
 # Prerequisite
 - S3 with a your backup stored on it.
 	- Soon able to get backups from other sources.
