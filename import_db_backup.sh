@@ -179,6 +179,9 @@ post_init_script() {
       pass_env="PGPASSWORD=$pass"
     fi
 
+    echo "Waiting for the database to be ready..."
+    sleep 5  # Wait for the container to be ready
+
     # Execute each .sql script in alphabetical order
     for script in $(find "$post_init_conf" -maxdepth 1 -type f -name "*.sql" | sort); do
       filename=$(basename "$script")
