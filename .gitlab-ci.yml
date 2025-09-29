@@ -3,22 +3,18 @@ stages:
 
 docker-build:
   # Use the official docker image.
-  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:latest
   stage: build
-  variables:
-    IMAGE_NAME: odo
-    IMAGE_TAG: $CI_COMMIT_TAG
-    HARBOR_DOCKER_REGISTRY: "rgy.k8s.devops-svc-ag.com/avisto"
-  services:
-    - docker:dind
   script:
     - echo "$CI_DEPENDENCY_PROXY_PASSWORD" | docker login -u $CI_DEPENDENCY_PROXY_USER --password-stdin $CI_DEPENDENCY_PROXY_SERVER  
-    - docker build -f ./Dockerfile -t $HARBOR_DOCKER_REGISTRY/$IMAGE_NAME:$IMAGE_TAG .
+    - docker build --pull -t "$HARBOR_REGISTRY/$CI_PROJECT_NAME:$CI_COMMIT_TAG" .
     - docker logout $CI_DEPENDENCY_PROXY_SERVER
-    - echo "$HARBOR_PASSWORD" | docker login -u $HARBOR_USER --password-stdin $HARBOR_DOCKER_REGISTRY
-    - docker push $HARBOR_DOCKER_REGISTRY/$IMAGE_NAME:$IMAGE_TAG
-    - docker logout $HARBOR_DOCKER_REGISTRY
+    - docker login -u "$HARBOR_USER" -p "$HARBOR_PASSWORD" $HARBOR_REGISTRY
+    - echo "Pushing Docker image ${HARBOR_REGISTRY}/${CI_PROJECT_NAME}:${CI_COMMIT_TAG}"
+    - docker push "$HARBOR_REGISTRY/$CI_PROJECT_NAME:$CI_COMMIT_TAG"
+    - docker logout $HARBOR_REGISTRY
+  # Run this job in a branch where a Dockerfile exists
   rules:
     - if: $CI_COMMIT_TAG != null
       exists:
         - Dockerfile
+
