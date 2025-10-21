@@ -9,6 +9,7 @@ FROM debian:12-slim@sha256:df52e55e3361a81ac1bead266f3373ee55d29aa50cf0975d440c2
 COPY --from=builder /usr/local/aws-cli/ /usr/local/aws-cli/
 COPY --from=builder /usr/local/bin/ /usr/local/bin/
 COPY --chmod=700 entrypoint.sh /entrypoint.sh
+COPY --chmod=700 backup_entrypoint.sh /backup_entrypoint.sh
 COPY --from=builder /bin/bzip2 /bin/bzip2
 ENTRYPOINT ["/entrypoint.sh"]
 CMD []
