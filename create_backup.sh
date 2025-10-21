@@ -204,6 +204,27 @@ create_backup_from_db() {
 
   echo "> Backup files copied to $backup_dir"
   ls -lh "$backup_dir"
+
+  # Post-process with bzip2 if needed
+  if [ "$compression" = "bzip2" ]; then
+    echo "> Compressing backup files with bzip2..."
+    for tarfile in "$backup_dir"/*.tar; do
+      if [ -f "$tarfile" ]; then
+        local filesize=$(du -h "$tarfile" | cut -f1)
+        echo "  Compressing $(basename "$tarfile") ($filesize) - this may take several minutes..."
+
+        # Use pv if available for progress, otherwise use plain bzip2
+        if command -v pv >/dev/null 2>&1; then
+          pv "$tarfile" | bzip2 -9 > "$tarfile.bz2"
+          rm "$tarfile"
+        else
+          bzip2 -9 -v "$tarfile"
+        fi
+      fi
+    done
+    echo "> Compression completed"
+    ls -lh "$backup_dir"
+  fi
 }
 
 # Function to upload backup to S3 using ODO image
