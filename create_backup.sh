@@ -14,12 +14,58 @@ ERR_UNKNOWN=99          # Unknown error
 # Global variables for cleanup
 TEMP_BACKUP_DIR=""
 LOG_FILE=""
+JSON_LOG_FILE=""
+BACKUP_START_TIME=""
+BACKUP_LABEL=""
+
+# Escape JSON strings
+json_escape() {
+  local string="$1"
+  # Escape backslashes, quotes, and newlines
+  echo "$string" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\n/\\n/g'
+}
+
+# JSON logging function for New Relic
+log_json() {
+  local level="$1"
+  local message="$2"
+  local event_type="${3:-log}"
+  shift 3
+
+  if [ -z "$JSON_LOG_FILE" ]; then
+    return
+  fi
+
+  local timestamp
+  timestamp=$(date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')
+
+  # Build JSON object
+  local json_msg=$(json_escape "$message")
+  local json_obj="{\"timestamp\":\"$timestamp\",\"level\":\"$level\",\"message\":\"$json_msg\",\"event_type\":\"$event_type\""
+
+  # Add service metadata
+  json_obj="$json_obj,\"service.name\":\"pg_backctl\",\"hostname\":\"$(hostname)\""
+
+  # Add additional fields passed as key=value pairs
+  while [ $# -gt 0 ]; do
+    local key="${1%%=*}"
+    local value="${1#*=}"
+    local escaped_value=$(json_escape "$value")
+    json_obj="$json_obj,\"$key\":\"$escaped_value\""
+    shift
+  done
+
+  json_obj="$json_obj}"
+
+  echo "$json_obj" >> "$JSON_LOG_FILE"
+}
 
 # Print error and exit with code
 die() {
   local msg="$1"
   local code="${2:-$ERR_UNKNOWN}"
   log "ERROR: $msg"
+  log_json "ERROR" "$msg" "backup_error" "error_code=$code"
   echo "Error $code: $msg" >&2
   exit "$code"
 }
@@ -36,6 +82,19 @@ log() {
   if [[ ! "$msg" =~ ^ERROR: ]]; then
     echo "$msg"
   fi
+
+  # Determine log level
+  local level="INFO"
+  if [[ "$msg" =~ ^ERROR: ]]; then
+    level="ERROR"
+  elif [[ "$msg" =~ ^WARNING: ]]; then
+    level="WARN"
+  fi
+
+  # Log to JSON (strip level prefix from message if present)
+  local clean_msg="${msg#ERROR: }"
+  clean_msg="${clean_msg#WARNING: }"
+  log_json "$level" "$clean_msg" "backup_log"
 }
 
 # Cleanup function for trap
@@ -43,6 +102,19 @@ cleanup_on_error() {
   local exit_code=$?
   if [ $exit_code -ne 0 ]; then
     log "ERROR: Script failed with exit code $exit_code, cleaning up..."
+
+    # Log failure event for New Relic
+    if [ -n "$BACKUP_START_TIME" ]; then
+      local failure_time=$(date +%s)
+      local duration=$((failure_time - BACKUP_START_TIME))
+
+      log_json "ERROR" "Backup failed" "backup_failed" \
+        "backup_label=${BACKUP_LABEL:-unknown}" \
+        "duration_seconds=$duration" \
+        "exit_code=$exit_code" \
+        "compression=${compression:-unknown}" \
+        "status=failed"
+    fi
 
     # Clean up temporary backup directory if it exists
     if [ -n "$TEMP_BACKUP_DIR" ] && [ -d "$TEMP_BACKUP_DIR" ]; then
@@ -372,6 +444,7 @@ run_backup() {
   local abs_backup_path
 
   label=$(generate_backup_label)
+  BACKUP_LABEL="$label"  # Store globally for error logging
 
   log "Starting backup from $(get_db_host_from_compose):$db_port as user $db_user"
   log "Backup label: $label"
@@ -401,6 +474,13 @@ run_backup() {
     run_backup_local "$abs_backup_path/$label" "$label" || die "Backup failed" $ERR_BACKUP_FAILED
   fi
 
+  # Calculate backup metrics
+  local backup_end_time=$(date +%s)
+  local duration=$((backup_end_time - BACKUP_START_TIME))
+  local backup_size_bytes=$(du -sb "$abs_backup_path/$label" 2>/dev/null | cut -f1)
+  local backup_size_mb=$((backup_size_bytes / 1024 / 1024))
+  local file_count=$(find "$abs_backup_path/$label" -type f | wc -l)
+
   # Cleanup temporary directory if used for S3 (explicit check)
   if [ -n "$s3_url" ] && [ -n "$TEMP_BACKUP_DIR" ] && [ -d "$TEMP_BACKUP_DIR" ]; then
     log "Cleaning up temporary backup directory: $TEMP_BACKUP_DIR"
@@ -409,11 +489,31 @@ run_backup() {
   fi
 
   log "Backup completed successfully"
+  log "Backup size: ${backup_size_mb}MB, Files: $file_count, Duration: ${duration}s"
+
+  # Determine destination
+  local destination
   if [ -n "$backup_path" ]; then
+    destination="local:$backup_path/$label"
     log "Backup location: $backup_path/$label"
   else
+    destination="s3:$s3_url/$label"
     log "Backup uploaded to: $s3_url/$label"
   fi
+
+  # Log structured completion event for New Relic
+  log_json "INFO" "Backup completed successfully" "backup_completed" \
+    "backup_label=$label" \
+    "duration_seconds=$duration" \
+    "backup_size_mb=$backup_size_mb" \
+    "backup_size_bytes=$backup_size_bytes" \
+    "file_count=$file_count" \
+    "compression=$compression" \
+    "destination=$destination" \
+    "db_host=$(get_db_host_from_compose)" \
+    "db_port=$db_port" \
+    "db_user=$db_user" \
+    "status=success"
 }
 
 # Robust env loading
@@ -454,12 +554,27 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Initialize log file
+# Initialize log files
 LOG_DIR="$SCRIPT_DIR/logs"
 mkdir -p "$LOG_DIR"
+
+# Human-readable log with timestamp in filename (for history)
 LOG_FILE="$LOG_DIR/backup_$(date +%Y%m%dT%H%M%S).log"
+
+# JSON log with consistent name (for New Relic to monitor)
+JSON_LOG_FILE="$LOG_DIR/backup.json"
+
+# Record start time for metrics
+BACKUP_START_TIME=$(date +%s)
+
 log "=== Backup script started ==="
 log "Log file: $LOG_FILE"
+log "JSON log file: $JSON_LOG_FILE"
+
+# Log start event with metadata
+log_json "INFO" "Backup started" "backup_started" \
+  "backup_type=pg_basebackup" \
+  "compression=$compression"
 
 # Validate arguments
 check_args
