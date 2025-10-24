@@ -1,0 +1,78 @@
+# pg_backctl Recovery Configuration File
+#
+# This file contains the configuration for pg_backctl database recovery/restore.
+# Copy this file to 'recovery.conf' and customize for your environment.
+#
+# Usage:
+#   ./import_db_backup.sh -c /path/to/recovery.conf
+#   ./import_db_backup.sh --config recovery.conf
+#
+# Note: Command-line arguments override config file values
+
+[source]
+# Backup source - choose ONE of the following:
+
+# Option 1: S3 backup
+# Uncomment to use S3 storage
+# s3_url = s3://mybucket
+# s3_endpoint = https://s3.region.provider.com
+
+# === AUTO-DETECT MODE (recommended for scripts) ===
+# Automatically restores the LATEST backup from a specific prefix
+# s3_search_prefix = backups/  (for pg_backctl backups with prefix)
+# s3_search_prefix = /  (for backups at bucket root level)
+# s3_search_prefix = postgresql-cluster/base/  (for other tools - backward compatible)
+# Default: "postgresql-cluster/base/" (backward compatible)
+
+# === SPECIFIC BACKUP MODE (for point-in-time recovery) ===
+# Restore a specific backup by full path
+# s3_backup_path = backups/20250124T143000  (exact backup to restore)
+# Note: If s3_backup_path is set, s3_search_prefix is ignored
+
+# Option 2: Local backup path
+# Uncomment to use local storage (must contain base.tar.gz and pg_wal.tar.gz)
+# path = /backups/postgres/20250124T143000
+
+[target]
+# Docker volume and service (REQUIRED)
+volume_name = postgres-data
+service = postgres
+compose_file = docker-compose.yml
+
+[restore]
+# Restore mode - choose ONE of the following:
+
+# Mode 1: Standby mode (-S flag)
+# Creates a standby/replica server
+# standby = false
+
+# Mode 2: Override volume (-o flag)
+# WARNING: This will DELETE the existing volume data!
+# override_volume = false
+
+# Mode 3: New volume (-V flag)
+# Creates a new volume with the restored data
+# new_volume_name = postgres-data-restored
+
+[postgres]
+# PostgreSQL version (for docker image compatibility)
+version = latest
+
+# Custom configuration files to replace after restore (optional)
+# replace_conf = confs/postgresql.auto.conf
+# replace_pg_hba_conf = confs/pg_hba.conf
+
+# Post-initialization scripts directory (optional)
+# Scripts in this folder will be run after restore
+# post_init_conf = confs/post-init
+
+[aws]
+# AWS credentials for S3 restores
+# Can also be set via environment variables or .env file
+# access_key = YOUR_ACCESS_KEY
+# secret_key = YOUR_SECRET_KEY
+# region = us-east-1
+
+[docker]
+# pg_backctl Docker image for restores
+image = pg_backctl:latest
