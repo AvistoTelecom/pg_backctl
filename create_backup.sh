@@ -8,15 +8,59 @@ ERR_MISSING_ENV=11      # Missing required environment variable
 ERR_MISSING_ARG=12      # Missing required argument
 ERR_USAGE=14            # Usage error (bad arg combination)
 ERR_BACKUP_FAILED=15    # Backup operation failed
+ERR_DISK_SPACE=16       # Insufficient disk space
 ERR_UNKNOWN=99          # Unknown error
+
+# Global variables for cleanup
+TEMP_BACKUP_DIR=""
+LOG_FILE=""
 
 # Print error and exit with code
 die() {
   local msg="$1"
   local code="${2:-$ERR_UNKNOWN}"
+  log "ERROR: $msg"
   echo "Error $code: $msg" >&2
   exit "$code"
 }
+
+# Logging function
+log() {
+  local msg="$1"
+  local timestamp
+  timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+  if [ -n "$LOG_FILE" ]; then
+    echo "[$timestamp] $msg" >> "$LOG_FILE"
+  fi
+  # Also echo to stdout for non-error messages
+  if [[ ! "$msg" =~ ^ERROR: ]]; then
+    echo "$msg"
+  fi
+}
+
+# Cleanup function for trap
+cleanup_on_error() {
+  local exit_code=$?
+  if [ $exit_code -ne 0 ]; then
+    log "ERROR: Script failed with exit code $exit_code, cleaning up..."
+
+    # Clean up temporary backup directory if it exists
+    if [ -n "$TEMP_BACKUP_DIR" ] && [ -d "$TEMP_BACKUP_DIR" ]; then
+      log "Removing temporary backup directory: $TEMP_BACKUP_DIR"
+      rm -rf "$TEMP_BACKUP_DIR"
+    fi
+
+    # Clean up /tmp/backup in container if it exists
+    if [ -n "${service:-}" ] && [ -n "${compose_filepath:-}" ]; then
+      if [ -f "$compose_filepath" ]; then
+        docker compose -f "$compose_filepath" exec -T "$service" rm -rf /tmp/backup 2>/dev/null || true
+      fi
+    fi
+  fi
+}
+
+# Set trap for cleanup
+trap cleanup_on_error EXIT ERR
 
 # variables default values
 pgversion="latest"
@@ -101,6 +145,24 @@ check_aws() {
   fi
 }
 
+# Function to check disk space
+check_disk_space() {
+  local target_dir="$1"
+  local min_free_gb="${2:-5}"  # Default 5GB minimum
+
+  # Get available space in GB
+  local available_gb
+  available_gb=$(df -BG "$target_dir" | awk 'NR==2 {print $4}' | sed 's/G//')
+
+  log "Available disk space in $target_dir: ${available_gb}GB"
+
+  if [ "$available_gb" -lt "$min_free_gb" ]; then
+    die "Insufficient disk space in $target_dir. Available: ${available_gb}GB, Required: at least ${min_free_gb}GB" $ERR_DISK_SPACE
+  fi
+
+  log "Disk space check passed"
+}
+
 # Function check arguments
 check_args() {
   if [ -z "${service:-}" ] || [ -z "${compose_filepath:-}" ]; then
@@ -125,6 +187,11 @@ check_args() {
   # If local, ensure directory exists or can be created
   if [ -n "${backup_path:-}" ]; then
     mkdir -p "$backup_path" || die "Cannot create backup directory: $backup_path" $ERR_USAGE
+    # Check disk space for local backups
+    check_disk_space "$backup_path"
+  else
+    # For S3 mode, check /tmp disk space
+    check_disk_space "/tmp"
   fi
 }
 
@@ -151,7 +218,7 @@ generate_backup_label() {
   if [ -n "$backup_label" ]; then
     echo "$backup_label"
   else
-    date +"%Y%m%d-%H%M%S"
+    date +"%Y%m%dT%H%M%S"
   fi
 }
 
@@ -180,13 +247,14 @@ create_backup_from_db() {
   host=$(get_db_host_from_compose)
   compression_flag=$(get_compression_flag)
 
-  echo "> Creating backup using database container"
+  log "Creating backup using database container"
 
   # Create temporary directory inside the db container
+  log "Creating temporary directory in container"
   docker compose -f "$compose_filepath" exec -T "$service" mkdir -p /tmp/backup
 
   # Run pg_basebackup inside the database container
-  echo "> Running pg_basebackup..."
+  log "Running pg_basebackup..."
   if [ -n "${PGPASSWORD:-}" ]; then
     docker compose -f "$compose_filepath" exec -T "$service" \
       bash -c "PGPASSWORD='$PGPASSWORD' pg_basebackup -h $host -p $db_port -U $db_user -D /tmp/backup -Ft $compression_flag -P -v"
@@ -196,34 +264,47 @@ create_backup_from_db() {
   fi
 
   # Copy backup files from container to host
-  echo "> Copying backup files from container..."
+  log "Copying backup files from container to host..."
   docker compose -f "$compose_filepath" cp "$service":/tmp/backup/. "$backup_dir/"
 
   # Cleanup temporary directory in container
+  log "Cleaning up container temporary directory"
   docker compose -f "$compose_filepath" exec -T "$service" rm -rf /tmp/backup
 
-  echo "> Backup files copied to $backup_dir"
-  ls -lh "$backup_dir"
+  log "Backup files copied to $backup_dir"
+  ls -lh "$backup_dir" | tee -a "$LOG_FILE"
 
   # Post-process with bzip2 if needed
   if [ "$compression" = "bzip2" ]; then
-    echo "> Compressing backup files with bzip2..."
+    log "Compressing backup files with bzip2..."
     for tarfile in "$backup_dir"/*.tar; do
       if [ -f "$tarfile" ]; then
         local filesize=$(du -h "$tarfile" | cut -f1)
-        echo "  Compressing $(basename "$tarfile") ($filesize) - this may take several minutes..."
+        log "Compressing $(basename "$tarfile") ($filesize) - this may take several minutes..."
 
         # Use pv if available for progress, otherwise use plain bzip2
+        local bz2_file="$tarfile.bz2"
         if command -v pv >/dev/null 2>&1; then
-          pv "$tarfile" | bzip2 -9 > "$tarfile.bz2"
-          rm "$tarfile"
+          if pv "$tarfile" | bzip2 -9 > "$bz2_file"; then
+            log "Compression successful, removing original tar file"
+            rm "$tarfile"
+          else
+            log "ERROR: bzip2 compression failed for $(basename "$tarfile"), keeping original"
+            rm -f "$bz2_file"  # Remove partial bz2 file
+            die "Compression failed for $(basename "$tarfile")" $ERR_BACKUP_FAILED
+          fi
         else
-          bzip2 -9 -v "$tarfile"
+          if bzip2 -9 -v "$tarfile"; then
+            log "Compression successful"
+          else
+            log "ERROR: bzip2 compression failed for $(basename "$tarfile")"
+            die "Compression failed for $(basename "$tarfile")" $ERR_BACKUP_FAILED
+          fi
         fi
       fi
     done
-    echo "> Compression completed"
-    ls -lh "$backup_dir"
+    log "Compression completed"
+    ls -lh "$backup_dir" | tee -a "$LOG_FILE"
   fi
 }
 
@@ -234,8 +315,15 @@ upload_backup_to_s3() {
   local bucket="${s3_url#s3://}"
   bucket="${bucket%/}"
 
-  echo "> Uploading backup to S3: s3://$bucket/$label/"
-  docker run -t --rm \
+  log "Uploading backup to S3: s3://$bucket/$label/"
+
+  # Count files to upload for verification
+  local file_count
+  file_count=$(find "$backup_dir" -type f | wc -l)
+  log "Files to upload: $file_count"
+
+  # Run docker with explicit error handling
+  if ! docker run -t --rm \
     -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY" \
     -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_KEY" \
     -e AWS_DEFAULT_REGION="$AWS_REGION" \
@@ -245,11 +333,20 @@ upload_backup_to_s3() {
     -v "$backup_dir":/backup \
     --entrypoint bash \
     "$odo_image" \
-    -c "aws configure set aws_access_key_id \"\$AWS_ACCESS_KEY_ID\" && \
+    -c "set -e && \
+        aws configure set aws_access_key_id \"\$AWS_ACCESS_KEY_ID\" && \
         aws configure set aws_secret_access_key \"\$AWS_SECRET_ACCESS_KEY\" && \
         aws configure set default.region \"\$AWS_DEFAULT_REGION\" && \
+        echo 'Starting S3 upload...' && \
         aws s3 cp /backup/ \"s3://\$S3_BUCKET/\$BACKUP_LABEL/\" --recursive --endpoint-url \"\$S3_ENDPOINT\" && \
-        echo \"Upload completed to s3://\$S3_BUCKET/\$BACKUP_LABEL/\""
+        echo 'Verifying upload...' && \
+        uploaded_count=\$(aws s3 ls \"s3://\$S3_BUCKET/\$BACKUP_LABEL/\" --endpoint-url \"\$S3_ENDPOINT\" --recursive | wc -l) && \
+        echo \"Uploaded files: \$uploaded_count\" && \
+        echo \"Upload completed to s3://\$S3_BUCKET/\$BACKUP_LABEL/\""; then
+    die "S3 upload failed. Check AWS credentials, endpoint, and network connectivity." $ERR_BACKUP_FAILED
+  fi
+
+  log "S3 upload completed successfully"
 }
 
 # Function to run backup with S3 storage
@@ -276,9 +373,9 @@ run_backup() {
 
   label=$(generate_backup_label)
 
-  echo "Starting backup from $(get_db_host_from_compose):$db_port as user $db_user"
-  echo "Backup label: $label"
-  echo "Compression: $compression"
+  log "Starting backup from $(get_db_host_from_compose):$db_port as user $db_user"
+  log "Backup label: $label"
+  log "Compression: $compression"
 
   # Prepare backup directory
   if [ -n "$backup_path" ]; then
@@ -291,6 +388,8 @@ run_backup() {
   else
     # For S3, use temporary local directory
     abs_backup_path="/tmp/pg_backctl_backup_$$"
+    # Mark this as temporary for cleanup
+    TEMP_BACKUP_DIR="$abs_backup_path"
   fi
 
   mkdir -p "$abs_backup_path/$label"
@@ -302,16 +401,18 @@ run_backup() {
     run_backup_local "$abs_backup_path/$label" "$label" || die "Backup failed" $ERR_BACKUP_FAILED
   fi
 
-  # Cleanup temporary directory if used for S3
-  if [ -z "$backup_path" ]; then
-    rm -rf "$abs_backup_path"
+  # Cleanup temporary directory if used for S3 (explicit check)
+  if [ -n "$s3_url" ] && [ -n "$TEMP_BACKUP_DIR" ] && [ -d "$TEMP_BACKUP_DIR" ]; then
+    log "Cleaning up temporary backup directory: $TEMP_BACKUP_DIR"
+    rm -rf "$TEMP_BACKUP_DIR"
+    TEMP_BACKUP_DIR=""  # Clear to avoid double cleanup in trap
   fi
 
-  echo "Backup completed successfully"
+  log "Backup completed successfully"
   if [ -n "$backup_path" ]; then
-    echo "Backup location: $backup_path/$label"
+    log "Backup location: $backup_path/$label"
   else
-    echo "Backup uploaded to: $s3_url/$label"
+    log "Backup uploaded to: $s3_url/$label"
   fi
 }
 
@@ -353,8 +454,18 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Initialize log file
+LOG_DIR="$SCRIPT_DIR/logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/backup_$(date +%Y%m%dT%H%M%S).log"
+log "=== Backup script started ==="
+log "Log file: $LOG_FILE"
+
 # Validate arguments
 check_args
 
 # Execute backup
 run_backup
+
+# Log completion
+log "=== Backup script completed successfully ==="
