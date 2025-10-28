@@ -14,7 +14,7 @@ ERR_UNKNOWN=99          # Unknown error
 # Global variables for cleanup
 TEMP_BACKUP_DIR=""
 LOG_FILE=""
-JSON_LOG_FILE=""
+NGINX_LOG_FILE=""
 BACKUP_START_TIME=""
 BACKUP_LABEL=""
 
@@ -25,39 +25,60 @@ json_escape() {
   echo "$string" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\n/\\n/g'
 }
 
-# JSON logging function for New Relic
+# Logging function for New Relic (nginx format)
 log_json() {
   local level="$1"
   local message="$2"
   local event_type="${3:-log}"
   shift 3
 
-  if [ -z "$JSON_LOG_FILE" ]; then
+  if [ -z "$NGINX_LOG_FILE" ]; then
     return
   fi
 
-  local timestamp
-  timestamp=$(date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')
+  local timestamp_nginx=$(date '+%d/%b/%Y:%H:%M:%S %z')
 
-  # Build JSON object
-  local json_msg=$(json_escape "$message")
-  local json_obj="{\"timestamp\":\"$timestamp\",\"level\":\"$level\",\"message\":\"$json_msg\",\"event_type\":\"$event_type\""
+  # Parse additional fields into associative array
+  local -A fields
+  fields["status"]="success"
+  fields["backup_label"]="-"
+  fields["destination"]="-"
+  fields["compression"]="-"
+  fields["backup_size_bytes"]="0"
+  fields["duration_seconds"]="0"
 
-  # Add service metadata
-  json_obj="$json_obj,\"service.name\":\"pg_backctl\",\"hostname\":\"$(hostname)\""
-
-  # Add additional fields passed as key=value pairs
+  # Parse key=value pairs
   while [ $# -gt 0 ]; do
     local key="${1%%=*}"
     local value="${1#*=}"
-    local escaped_value=$(json_escape "$value")
-    json_obj="$json_obj,\"$key\":\"$escaped_value\""
+    fields["$key"]="$value"
     shift
   done
 
-  json_obj="$json_obj}"
+  # Determine HTTP-style status code
+  local status_code
+  case "$level" in
+    ERROR) status_code="500" ;;
+    WARN)  status_code="400" ;;
+    *)     status_code="200" ;;
+  esac
 
-  echo "$json_obj" >> "$JSON_LOG_FILE"
+  if [ "${fields[status]}" = "failed" ]; then
+    status_code="500"
+  fi
+
+  # nginx combined log format:
+  # $remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent"
+  #
+  # Adapted for pg_backctl:
+  # $hostname - $service [$timestamp] "$event_type backup_label method" $status_code $bytes "$destination" "$user_agent"
+
+  local request="$event_type ${fields[backup_label]} HTTP/1.1"
+  local user_agent="pg_backctl/1.3.0 compression=${fields[compression]} duration=${fields[duration_seconds]}s"
+
+  local nginx_log="$(hostname) - pg_backctl [$timestamp_nginx] \"$request\" $status_code ${fields[backup_size_bytes]} \"${fields[destination]}\" \"$user_agent\""
+
+  echo "$nginx_log" >> "$NGINX_LOG_FILE"
 }
 
 # Print error and exit with code
@@ -908,15 +929,15 @@ mkdir -p "$LOG_DIR"
 # Human-readable log with timestamp in filename (for history)
 LOG_FILE="$LOG_DIR/backup_$(date +%Y%m%dT%H%M%S).log"
 
-# JSON log with consistent name (for New Relic to monitor)
-JSON_LOG_FILE="$LOG_DIR/backup.json"
+# nginx format log with consistent name (for New Relic to monitor)
+NGINX_LOG_FILE="$LOG_DIR/backup.log"
 
 # Record start time for metrics
 BACKUP_START_TIME=$(date +%s)
 
 log "=== Backup script started ==="
 log "Log file: $LOG_FILE"
-log "JSON log file: $JSON_LOG_FILE"
+log "nginx log file: $NGINX_LOG_FILE"
 
 # Log start event with metadata
 log_json "INFO" "Backup started" "backup_started" \

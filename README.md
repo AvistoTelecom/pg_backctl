@@ -458,23 +458,26 @@ A: Use the new volume mode (-V) to restore to a test volume periodically.
 
 ## Monitoring & Observability
 
-pg_backctl generates JSON logs for integration with monitoring tools like New Relic.
+pg_backctl generates logs in nginx combined log format for integration with monitoring tools like New Relic Infrastructure agent.
 
-**Log Location:** `logs/backup.json`
+**Log Location:** `logs/backup.log`
+
+**Log Format:** nginx combined log format
+```
+$hostname - $service [$time_local] "$event_type label HTTP/1.1" $status $bytes "$destination" "$user_agent"
+```
 
 **Example Log Entry:**
-```json
-{
-  "timestamp": "2025-10-27T16:52:10.123Z",
-  "level": "INFO",
-  "message": "Backup completed successfully",
-  "event_type": "backup_completed",
-  "backup_label": "20251027T143000",
-  "duration_seconds": 450,
-  "backup_size_mb": 1024,
-  "status": "success"
-}
 ```
+myhost - pg_backctl [27/Oct/2024:16:52:10 +0000] "backup_completed 20251027T143000 HTTP/1.1" 200 1073741824 "s3://mybucket/backups/20251027T143000" "pg_backctl/1.3.0 compression=gzip duration=450s"
+```
+
+**Event Types:**
+- `backup_started` - Backup operation initiated
+- `backup_completed` - Backup finished successfully
+- `backup_failed` - Backup encountered an error
+- `backup_uploaded` - Backup uploaded to S3
+- `retention_cleanup` - Old backups removed
 
 **New Relic Integration:**
 See [newrelic-logging-example.yml](newrelic-logging-example.yml) for configuration.
