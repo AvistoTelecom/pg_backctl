@@ -105,8 +105,8 @@ compression = gzip                              # Compression method: gzip, bzip
 #------------------------------------------------------------------------------
 
 [docker]
-
-image = pg_backctl:latest                       # pg_backctl Docker image for S3 operations
+# pg_backctl Docker image for S3 operations
+image = ghcr.io/avistotelecom/pg_backctl:latest
 
 
 #------------------------------------------------------------------------------
