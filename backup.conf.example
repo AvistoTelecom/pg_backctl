@@ -1,0 +1,133 @@
+# -----------------------------
+# pg_backctl Backup Configuration
+# -----------------------------
+#
+# This file contains configuration for pg_backctl database backups.
+# Copy this file to 'backup.conf' and customize for your environment.
+#
+# Usage:
+#   ./create_backup.sh -c /path/to/backup.conf
+#   ./create_backup.sh --config backup.conf
+#
+# Note: Command-line arguments override config file values
+
+
+#------------------------------------------------------------------------------
+# DATABASE CONNECTION
+#------------------------------------------------------------------------------
+
+[database]
+
+# - Docker Compose Settings -
+
+service = postgres                              # Docker Compose service name (REQUIRED)
+compose_file = docker-compose.yml              # Path to docker-compose file (REQUIRED)
+
+# - Connection Settings -
+
+#port = 5432                                    # Database port (default: 5432)
+#user = postgres                                # Database user (default: postgres)
+
+
+#------------------------------------------------------------------------------
+# BACKUP DESTINATION
+#------------------------------------------------------------------------------
+
+[destination]
+
+# Choose ONE of the following destination types:
+
+# - Local Storage -
+#path = /backups/postgres                       # Local backup directory
+
+# - S3 Storage -
+#s3_url = s3://mybucket                         # S3 bucket URL
+#s3_endpoint = https://s3.region.provider.com   # S3 endpoint URL
+
+# - S3 Path Prefix -
+# Backups are stored at: s3://bucket/prefix/YYYYMMDDTHHMMSS/
+# Examples:
+#   s3_prefix = backups                         # Recommended for organization
+#   s3_prefix = postgresql-cluster/base         # For backward compatibility with other tools
+#   s3_prefix =                                 # Empty = store at bucket root level
+
+s3_prefix = backups
+
+
+#------------------------------------------------------------------------------
+# BACKUP OPTIONS
+#------------------------------------------------------------------------------
+
+[backup]
+
+# - Backup Label -
+
+#label = manual-backup-20250124                 # Custom backup label (default: auto-generated timestamp)
+
+# - Compression -
+
+compression = gzip                              # Compression method: gzip, bzip2, none
+                                                # gzip: fast, standard compression
+                                                # bzip2: slower, better compression
+                                                # none: no compression (fastest)
+
+# - Disk Space Check -
+
+#min_disk_space_gb = 5                          # Minimum free disk space required (GB)
+
+# - Retention Policy -
+# Automatically cleanup old backups from S3
+# Choose ONE of the following strategies:
+
+#retention_days = 30                            # Keep backups for N days
+#retention_count = 10                           # Keep last N backups
+
+                                                # Note: retention_count takes precedence if both set
+                                                # Note: No cleanup if neither is set
+
+
+#------------------------------------------------------------------------------
+# AWS CREDENTIALS
+#------------------------------------------------------------------------------
+
+[aws]
+
+# AWS credentials for S3 uploads
+# Can also be set via environment variables or .env file
+
+#access_key = YOUR_ACCESS_KEY
+#secret_key = YOUR_SECRET_KEY
+#region = us-east-1
+
+
+#------------------------------------------------------------------------------
+# DOCKER IMAGE
+#------------------------------------------------------------------------------
+
+[docker]
+
+image = pg_backctl:latest                       # pg_backctl Docker image for S3 operations
+
+
+#------------------------------------------------------------------------------
+# ADVANCED OPTIONS
+#------------------------------------------------------------------------------
+
+[advanced]
+
+# - Backup Checksums -
+#
+# pg_backctl automatically generates SHA256 checksums for all backup files:
+#   • backup.sha256      - SHA256 checksums for all files
+#   • backup.sha256.info - Metadata describing checksum format
+#
+# These files enable external verification tools to validate backup integrity.
+# No automatic verification is performed by pg_backctl.
+#
+# Manual verification example:
+#   aws s3 cp s3://bucket/backups/20251027T143000/ ./backup --recursive
+#   cd backup && sha256sum -c backup.sha256
+#
+# Future features (not yet implemented):
+#   encryption =
+#   incremental = false

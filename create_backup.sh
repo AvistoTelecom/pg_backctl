@@ -149,7 +149,102 @@ db_user="postgres"
 db_name=""
 service=""
 compose_filepath=""
-odo_image="odo:latest"
+pg_backctl_image="pg_backctl:latest"
+config_file=""
+min_disk_space_gb="5"
+s3_backup_prefix="backups"  # Default prefix for S3 backups (e.g., "backups" -> s3://bucket/backups/LABEL/)
+retention_count=""  # Keep last N backups (takes priority over retention_days)
+retention_days=""   # Keep backups for N days
+
+# Function to parse INI-style config file
+parse_config_file() {
+  local config_path="$1"
+
+  if [ ! -f "$config_path" ]; then
+    die "Config file not found: $config_path" $ERR_USAGE
+  fi
+
+  log "Loading configuration from: $config_path"
+
+  local current_section=""
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    # Remove leading/trailing whitespace
+    line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+    # Skip empty lines and comments
+    [[ -z "$line" || "$line" =~ ^# ]] && continue
+
+    # Check for section header
+    if [[ "$line" =~ ^\[(.+)\]$ ]]; then
+      current_section="${BASH_REMATCH[1]}"
+      continue
+    fi
+
+    # Parse key=value pairs
+    if [[ "$line" =~ ^([^=]+)=(.*)$ ]]; then
+      local key="${BASH_REMATCH[1]}"
+      local value="${BASH_REMATCH[2]}"
+
+      # Trim whitespace from key and value
+      key=$(echo "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+      value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+      # Remove quotes if present
+      value=$(echo "$value" | sed 's/^["'\'']\(.*\)["'\'']$/\1/')
+
+      # Map config file keys to script variables
+      case "$current_section" in
+        database)
+          case "$key" in
+            service) service="$value" ;;
+            compose_file) compose_filepath="$value" ;;
+            host) db_host="$value" ;;
+            port) db_port="$value" ;;
+            user) db_user="$value" ;;
+            name) db_name="$value" ;;
+            version) pgversion="$value" ;;
+          esac
+          ;;
+        destination)
+          case "$key" in
+            path) backup_path="$value" ;;
+            s3_url) s3_url="$value" ;;
+            s3_endpoint) s3_endpoint="$value" ;;
+            s3_prefix) s3_backup_prefix="$value" ;;
+          esac
+          ;;
+        backup)
+          case "$key" in
+            label) backup_label="$value" ;;
+            compression) compression="$value" ;;
+            min_disk_space_gb) min_disk_space_gb="$value" ;;
+            retention_count) retention_count="$value" ;;
+            retention_days) retention_days="$value" ;;
+          esac
+          ;;
+        aws)
+          case "$key" in
+            access_key) AWS_ACCESS_KEY="$value" ;;
+            secret_key) AWS_SECRET_KEY="$value" ;;
+            region) AWS_REGION="$value" ;;
+          esac
+          ;;
+        docker)
+          case "$key" in
+            image) pg_backctl_image="$value" ;;
+          esac
+          ;;
+        advanced)
+          case "$key" in
+            encryption) encryption="$value" ;;
+            incremental) incremental="$value" ;;
+          esac
+          ;;
+      esac
+    fi
+  done < "$config_path"
+}
 
 # Check for required external commands
 for cmd in docker sed grep date; do
@@ -164,9 +259,12 @@ usage() {
 Usage: $0 [OPTIONS]
 
 Options:
+  Configuration:
+  -c, --config FILE     Load configuration from file (overrides defaults)
+
   Database connection:
-  -n SERVICE_NAME       Docker Compose service name (required)
-  -f COMPOSE_FILEPATH   Path to docker-compose file (required)
+  -n SERVICE_NAME       Docker Compose service name (required unless in config)
+  -f COMPOSE_FILEPATH   Path to docker-compose file (required unless in config)
   -H DB_HOST            Database host (default: use service from compose)
   -T DB_PORT            Database port (default: 5432)
   -U DB_USER            Database user (default: postgres)
@@ -182,10 +280,10 @@ Options:
   -C COMPRESSION        Compression method: gzip, bzip2, none (default: gzip)
   -E ENCRYPTION         Encryption passphrase (future: for pg_basebackup --encrypt)
   -I                    Incremental backup (future: requires base backup reference)
-  -O ODO_IMAGE          ODO docker image (default: odo:latest)
+  -O PG_BACKCTL_IMAGE   pg_backctl docker image (default: pg_backctl:latest)
   -p PG_VERSION         Postgres version (default: latest)
 
-  AWS credentials (optional, can be set in .env):
+  AWS credentials (optional, can be set in .env or config file):
   -a AWS_ACCESS_KEY     AWS access key
   -s AWS_SECRET_KEY     AWS secret key
   -r AWS_REGION         AWS region
@@ -193,7 +291,13 @@ Options:
   -h, --help            Show this help message and exit
 
 Examples:
-  # Backup to S3 with gzip compression
+  # Using a config file
+  $0 -c backup.conf
+
+  # Config file with CLI override
+  $0 -c backup.conf -l "manual-backup-$(date +%Y%m%d)"
+
+  # Backup to S3 with gzip compression (no config file)
   $0 -n db-service -f docker-compose.yml -u s3://mybucket/backups -e https://s3.endpoint.com
 
   # Backup to local directory with bzip2 compression
@@ -204,6 +308,11 @@ Examples:
 
   # Backup with custom database connection
   $0 -n db-service -f docker-compose.yml -H localhost -T 5432 -U replication -P /backups/mydb
+
+Config File:
+  See backup.conf.example for a complete configuration file example.
+  Config file uses INI format with sections: [database], [destination], [backup], [aws], [docker]
+  Command-line arguments override config file values.
 EOF
 }
 
@@ -260,10 +369,10 @@ check_args() {
   if [ -n "${backup_path:-}" ]; then
     mkdir -p "$backup_path" || die "Cannot create backup directory: $backup_path" $ERR_USAGE
     # Check disk space for local backups
-    check_disk_space "$backup_path"
+    check_disk_space "$backup_path" "$min_disk_space_gb"
   else
     # For S3 mode, check /tmp disk space
-    check_disk_space "/tmp"
+    check_disk_space "/tmp" "$min_disk_space_gb"
   fi
 }
 
@@ -380,16 +489,22 @@ create_backup_from_db() {
   fi
 }
 
-# Function to upload backup to S3 using ODO image
+# Function to upload backup to S3 using pg_backctl image
 upload_backup_to_s3() {
   local backup_dir="$1"
   local label="$2"
   local bucket="${s3_url#s3://}"
   bucket="${bucket%/}"
 
-  log "Uploading backup to S3: s3://$bucket/$label/"
+  # Build S3 path with prefix (e.g., backups/20250124T143000)
+  local s3_path="${s3_backup_prefix}/${label}"
+  # Remove any duplicate slashes
+  s3_path="${s3_path//\/\//\/}"
 
-  # Count files to upload for verification
+  log "Uploading backup to S3: s3://$bucket/$s3_path/"
+  log "Using S3 prefix: $s3_backup_prefix"
+
+  # Count files to upload
   local file_count
   file_count=$(find "$backup_dir" -type f | wc -l)
   log "Files to upload: $file_count"
@@ -400,25 +515,222 @@ upload_backup_to_s3() {
     -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_KEY" \
     -e AWS_DEFAULT_REGION="$AWS_REGION" \
     -e S3_ENDPOINT="$s3_endpoint" \
-    -e BACKUP_LABEL="$label" \
+    -e S3_PATH="$s3_path" \
     -e S3_BUCKET="$bucket" \
     -v "$backup_dir":/backup \
     --entrypoint bash \
-    "$odo_image" \
+    "$pg_backctl_image" \
     -c "set -e && \
         aws configure set aws_access_key_id \"\$AWS_ACCESS_KEY_ID\" && \
         aws configure set aws_secret_access_key \"\$AWS_SECRET_ACCESS_KEY\" && \
         aws configure set default.region \"\$AWS_DEFAULT_REGION\" && \
         echo 'Starting S3 upload...' && \
-        aws s3 cp /backup/ \"s3://\$S3_BUCKET/\$BACKUP_LABEL/\" --recursive --endpoint-url \"\$S3_ENDPOINT\" && \
+        aws s3 cp /backup/ \"s3://\$S3_BUCKET/\$S3_PATH/\" --recursive --endpoint-url \"\$S3_ENDPOINT\" && \
         echo 'Verifying upload...' && \
-        uploaded_count=\$(aws s3 ls \"s3://\$S3_BUCKET/\$BACKUP_LABEL/\" --endpoint-url \"\$S3_ENDPOINT\" --recursive | wc -l) && \
+        uploaded_count=\$(aws s3 ls \"s3://\$S3_BUCKET/\$S3_PATH/\" --endpoint-url \"\$S3_ENDPOINT\" --recursive | wc -l) && \
         echo \"Uploaded files: \$uploaded_count\" && \
-        echo \"Upload completed to s3://\$S3_BUCKET/\$BACKUP_LABEL/\""; then
+        echo \"Upload completed to s3://\$S3_BUCKET/\$S3_PATH/\""; then
     die "S3 upload failed. Check AWS credentials, endpoint, and network connectivity." $ERR_BACKUP_FAILED
   fi
 
   log "S3 upload completed successfully"
+}
+
+# Function to generate checksums for backup files
+generate_checksums() {
+  local backup_dir="$1"
+  local label="$2"
+  local checksum_file="$backup_dir/backup.sha256"
+  local metadata_file="$backup_dir/backup.sha256.info"
+
+  log "Generating SHA256 checksums for backup integrity verification..."
+
+  # Generate checksums for all files (excluding checksum/metadata files themselves)
+  (cd "$backup_dir" && find . -type f ! -name "backup.sha256*" -exec sha256sum {} \; | sort -k2) > "$checksum_file"
+
+  local file_count
+  file_count=$(wc -l < "$checksum_file")
+
+  log "Generated checksums for $file_count files"
+  log "Checksum manifest: $checksum_file"
+
+  # Create metadata file explaining the checksum format
+  cat > "$metadata_file" <<EOF
+# pg_backctl Backup Checksum Metadata
+# This file describes the checksum manifest format for verification tools
+
+backup_label: $label
+backup_timestamp: $(date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')
+checksum_algorithm: SHA256
+checksum_tool: sha256sum (GNU coreutils)
+manifest_file: backup.sha256
+
+# Manifest Format:
+# Each line contains: <sha256_hash>  <relative_filepath>
+# Example:
+#   abc123def456...  ./base.tar.gz
+#   def456abc789...  ./pg_wal.tar.gz
+
+# How to Verify:
+# 1. Download the backup directory from S3
+# 2. Run: sha256sum -c backup.sha256
+# 3. All files should report "OK"
+
+# Files in this backup:
+$(cat "$checksum_file" | awk '{print "#   " $2}')
+
+# Total files: $file_count
+# Generated by: pg_backctl
+# Version: 1.3.0
+EOF
+
+  log "Generated checksum metadata: $metadata_file"
+
+  # Log first few checksums for debugging
+  log "Sample checksums:"
+  head -n 3 "$checksum_file" | while read -r line; do
+    log "  $line"
+  done
+
+  log_json "INFO" "Checksums generated" "backup_checksum" \
+    "file_count=$file_count" \
+    "checksum_file=backup.sha256" \
+    "metadata_file=backup.sha256.info" \
+    "algorithm=SHA256"
+}
+
+# Function to cleanup old backups based on retention policy
+cleanup_old_backups() {
+  local bucket="${s3_url#s3://}"
+  bucket="${bucket%/}"
+
+  # Check if retention policy is configured
+  if [ -z "${retention_count:-}" ] && [ -z "${retention_days:-}" ]; then
+    log "No retention policy configured, skipping cleanup"
+    return 0
+  fi
+
+  log "Applying retention policy to S3 backups..."
+
+  # List all backups in the prefix, sorted by LastModified (newest first)
+  local backup_list
+  backup_list=$(docker run -t --rm \
+    -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY" \
+    -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_KEY" \
+    -e AWS_DEFAULT_REGION="$AWS_REGION" \
+    -e S3_ENDPOINT="$s3_endpoint" \
+    -e S3_BUCKET="$bucket" \
+    -e S3_PREFIX="${s3_backup_prefix}" \
+    --entrypoint bash \
+    "$pg_backctl_image" \
+    -c "aws configure set aws_access_key_id \"\$AWS_ACCESS_KEY_ID\" && \
+        aws configure set aws_secret_access_key \"\$AWS_SECRET_ACCESS_KEY\" && \
+        aws configure set default.region \"\$AWS_DEFAULT_REGION\" && \
+        aws s3api list-objects-v2 \
+          --bucket \"\$S3_BUCKET\" \
+          --prefix \"\$S3_PREFIX/\" \
+          --endpoint \"\$S3_ENDPOINT\" \
+          --query 'reverse(sort_by(Contents, &LastModified))' \
+          --output json" 2>/dev/null) || {
+    log "WARNING: Failed to list backups for retention cleanup"
+    return 0
+  }
+
+  # Extract unique backup directories (everything up to the first file)
+  local backup_dirs
+  backup_dirs=$(echo "$backup_list" | docker run -i --rm \
+    --entrypoint python3 \
+    "$pg_backctl_image" \
+    -c "
+import json, sys
+from datetime import datetime, timedelta
+
+data = json.load(sys.stdin)
+if not data:
+    sys.exit(0)
+
+# Group files by backup directory
+backups = {}
+for item in data:
+    key = item['Key']
+    # Extract backup dir (e.g., 'backups/20250124T143000')
+    parts = key.split('/')
+    if len(parts) >= 2:
+        backup_dir = '/'.join(parts[:-1])  # Everything except filename
+        if backup_dir not in backups:
+            backups[backup_dir] = {
+                'dir': backup_dir,
+                'last_modified': item['LastModified']
+            }
+
+# Sort by last_modified (newest first)
+sorted_backups = sorted(backups.values(), key=lambda x: x['last_modified'], reverse=True)
+
+# Apply retention policy
+retention_count = ${retention_count:-0}
+retention_days = ${retention_days:-0}
+to_delete = []
+
+for i, backup in enumerate(sorted_backups):
+    keep = False
+
+    # Priority 1: retention_count
+    if retention_count > 0 and i < retention_count:
+        keep = True
+    # Priority 2: retention_days (if no retention_count)
+    elif retention_days > 0 and retention_count == 0:
+        modified = datetime.fromisoformat(backup['last_modified'].replace('Z', '+00:00'))
+        age_days = (datetime.now(modified.tzinfo) - modified).days
+        if age_days < retention_days:
+            keep = True
+
+    if not keep:
+        to_delete.append(backup['dir'])
+
+# Output directories to delete
+for dir_path in to_delete:
+    print(dir_path)
+" 2>/dev/null) || {
+    log "WARNING: Failed to process backup list for retention"
+    return 0
+  }
+
+  # Delete old backups
+  if [ -z "$backup_dirs" ]; then
+    log "No old backups to delete (retention policy satisfied)"
+    return 0
+  fi
+
+  local delete_count=0
+  while IFS= read -r backup_dir; do
+    [ -z "$backup_dir" ] && continue
+
+    log "Deleting old backup: s3://$bucket/$backup_dir/"
+
+    if docker run -t --rm \
+      -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY" \
+      -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_KEY" \
+      -e AWS_DEFAULT_REGION="$AWS_REGION" \
+      -e S3_ENDPOINT="$s3_endpoint" \
+      -e S3_BUCKET="$bucket" \
+      -e BACKUP_DIR="$backup_dir" \
+      --entrypoint bash \
+      "$pg_backctl_image" \
+      -c "aws configure set aws_access_key_id \"\$AWS_ACCESS_KEY_ID\" && \
+          aws configure set aws_secret_access_key \"\$AWS_SECRET_ACCESS_KEY\" && \
+          aws configure set default.region \"\$AWS_DEFAULT_REGION\" && \
+          aws s3 rm \"s3://\$S3_BUCKET/\$BACKUP_DIR/\" --recursive --endpoint-url \"\$S3_ENDPOINT\"" >/dev/null 2>&1; then
+      ((delete_count++))
+      log_json "INFO" "Deleted old backup: $backup_dir" "backup_retention" "backup_dir=$backup_dir"
+    else
+      log "WARNING: Failed to delete backup: $backup_dir"
+    fi
+  done <<< "$backup_dirs"
+
+  if [ $delete_count -gt 0 ]; then
+    log "Retention policy: deleted $delete_count old backup(s)"
+    log_json "INFO" "Retention cleanup completed" "backup_retention" "deleted_count=$delete_count"
+  fi
 }
 
 # Function to run backup with S3 storage
@@ -427,7 +739,10 @@ run_backup_s3() {
   local label="$2"
 
   create_backup_from_db "$backup_dir"
+  generate_checksums "$backup_dir" "$label"
   upload_backup_to_s3 "$backup_dir" "$label"
+  log "Checksum manifest uploaded to S3 for external verification"
+  cleanup_old_backups
 }
 
 # Function to run backup with local storage
@@ -436,6 +751,10 @@ run_backup_local() {
   local label="$2"
 
   create_backup_from_db "$backup_dir"
+  generate_checksums "$backup_dir" "$label"
+  log "Local backup complete with checksum manifest:"
+  log "  - Checksums: $backup_dir/backup.sha256"
+  log "  - Metadata: $backup_dir/backup.sha256.info"
 }
 
 # Main backup orchestration function
@@ -516,7 +835,28 @@ run_backup() {
     "status=success"
 }
 
-# Robust env loading
+# Get script directory
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &>/dev/null && pwd )"
+
+# Parse command line arguments (first pass - check for config file)
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -c|--config)
+      config_file="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      # Store remaining args for second pass
+      break
+      ;;
+  esac
+done
+
+# Load .env file first (lowest priority)
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &>/dev/null && pwd )"
 ENV_FILE="$SCRIPT_DIR/.env"
 if [[ -f "$ENV_FILE" ]]; then
@@ -526,7 +866,13 @@ if [[ -f "$ENV_FILE" ]]; then
   set +a
 fi
 
-# Parse command line arguments
+# Load config file if specified (medium priority - overrides .env)
+if [ -n "$config_file" ]; then
+  parse_config_file "$config_file"
+  echo "Configuration loaded from: $config_file"
+fi
+
+# Parse remaining command line arguments (highest priority - overrides config file)
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -a) AWS_ACCESS_KEY="$2"; shift 2;;
@@ -545,8 +891,9 @@ while [[ $# -gt 0 ]]; do
     -T) db_port="$2"; shift 2;;
     -U) db_user="$2"; shift 2;;
     -d) db_name="$2"; shift 2;;
-    -O) odo_image="$2"; shift 2;;
+    -O) pg_backctl_image="$2"; shift 2;;
     -p) pgversion="$2"; shift 2;;
+    -c|--config) shift 2;;  # Already handled in first pass
     -h|--help) usage; exit 0;;
     --) shift; break;;
     -*) echo "Unknown option: $1"; usage; exit 1;;

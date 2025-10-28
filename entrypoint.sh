@@ -11,7 +11,7 @@ for cmd in aws bzip2 tar grep sed; do
 done
 
 # Clean the volume
-echo "[ODO] Cleaning /data volume..."
+echo "[pg_backctl] Cleaning /data volume..."
 rm -rf /data/*
 
 fetch_wals() {
@@ -57,7 +57,37 @@ fetch_wals() {
 
 restore_backup() {
   echo "Restoring base backup..."
-  tar -jxvf /backup/data.tar.bz2 -C /data/
+
+  # Check which backup format we have
+  if [ -f /backup/data.tar.bz2 ]; then
+    # Old format (other tools)
+    echo "[pg_backctl] Restoring from data.tar.bz2 format..."
+    tar -jxvf /backup/data.tar.bz2 -C /data/
+  elif [ -f /backup/base.tar.gz ]; then
+    # pg_backctl format
+    echo "[pg_backctl] Restoring from pg_basebackup format (base.tar.gz + pg_wal.tar.gz)..."
+    tar -zxvf /backup/base.tar.gz -C /data/
+
+    # Check if pg_wal exists separately
+    if [ -f /backup/pg_wal.tar.gz ]; then
+      echo "[pg_backctl] Extracting pg_wal.tar.gz..."
+      tar -zxvf /backup/pg_wal.tar.gz -C /data/pg_wal/
+    fi
+  elif [ -f /backup/base.tar.bz2 ]; then
+    # pg_backctl format with bzip2
+    echo "[pg_backctl] Restoring from pg_basebackup format (base.tar.bz2 + pg_wal.tar.bz2)..."
+    tar -jxvf /backup/base.tar.bz2 -C /data/
+
+    # Check if pg_wal exists separately
+    if [ -f /backup/pg_wal.tar.bz2 ]; then
+      echo "[pg_backctl] Extracting pg_wal.tar.bz2..."
+      tar -jxvf /backup/pg_wal.tar.bz2 -C /data/pg_wal/
+    fi
+  else
+    echo "[pg_backctl] ERROR: No recognized backup format found!"
+    ls -lah /backup/
+    exit 1
+  fi
 
   touch /data/recovery.signal
   chown -R 999:999 /data
@@ -74,10 +104,14 @@ set_restore_command() {
 
 # Main logic
 if [[ -n "${backup_path:-}" ]]; then
-  echo "[ODO] local_backup mode"
+  echo "[pg_backctl] local_backup mode"
   # You may want to add local WAL extraction here if needed
 else
-  echo "[ODO] Configuring S3 mode"
+  echo "[pg_backctl] Configuring S3 mode"
+  echo "[pg_backctl] S3_BACKUP_URL: ${S3_BACKUP_URL}"
+  echo "[pg_backctl] S3_ENDPOINT: ${S3_ENDPOINT}"
+  echo "[pg_backctl] AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}"
+
   aws configure set aws_access_key_id "$AWS_ACCESS_KEY_ID"
   aws configure set aws_secret_access_key "$AWS_SECRET_ACCESS_KEY"
   aws configure set default.region "$AWS_DEFAULT_REGION"
@@ -85,22 +119,76 @@ else
   bucket="${S3_BACKUP_URL#s3://}"
   bucket="${bucket%/}"
 
-  key=$(aws s3api list-objects-v2 \
-    --bucket "$bucket" \
-    --endpoint "$S3_ENDPOINT" \
-    --prefix postgresql-cluster/base/ \
-    --region "$AWS_DEFAULT_REGION" \
-    --output text \
-    --query "reverse(sort_by(Contents,&LastModified))[0].Key")
+  echo "[pg_backctl] Parsed bucket: ${bucket}"
 
-  folder="${key%/*}/"
-  s3_full_url="${S3_BACKUP_URL}/${folder}"
-  echo "$s3_full_url"
+  # Use S3_BACKUP_PATH if provided, otherwise auto-detect (backward compatible)
+  if [ -n "${S3_BACKUP_PATH:-}" ]; then
+    echo "[pg_backctl] Using specified backup path: $S3_BACKUP_PATH"
+    s3_full_url="s3://${bucket}/${S3_BACKUP_PATH}/"
+  else
+    echo "[pg_backctl] Auto-detecting latest backup (using postgresql-cluster/base/ prefix for backward compatibility)"
+    # Default to postgresql-cluster/base/ for backward compatibility
+    search_prefix="${S3_SEARCH_PREFIX:-postgresql-cluster/base/}"
+
+    # Treat "/" as root level (empty prefix)
+    if [ "$search_prefix" = "/" ]; then
+      search_prefix=""
+      echo "[pg_backctl] Searching at bucket root level"
+    fi
+
+    echo "[pg_backctl] ========================================="
+    echo "[pg_backctl] Searching for latest backup"
+    echo "[pg_backctl] Bucket: s3://${bucket}/"
+    if [ -n "$search_prefix" ]; then
+      echo "[pg_backctl] Search prefix: ${search_prefix}"
+      echo "[pg_backctl] Full search path: s3://${bucket}/${search_prefix}"
+    else
+      echo "[pg_backctl] Search prefix: (root level)"
+      echo "[pg_backctl] Full search path: s3://${bucket}/"
+    fi
+    echo "[pg_backctl] Endpoint: ${S3_ENDPOINT}"
+    echo "[pg_backctl] ========================================="
+
+    # Use json output to avoid sort_by error on empty results
+    key=$(aws s3api list-objects-v2 \
+      --bucket "$bucket" \
+      --endpoint "$S3_ENDPOINT" \
+      --prefix "$search_prefix" \
+      --region "$AWS_DEFAULT_REGION" \
+      --output json \
+      --query "reverse(sort_by(Contents || \`[]\`,&LastModified))[0].Key" | tr -d '"')
+
+    if [ -z "$key" ] || [ "$key" = "null" ] || [ "$key" = "None" ]; then
+      echo "[pg_backctl] ERROR: No backups found in s3://${bucket}/${search_prefix}"
+      echo "[pg_backctl] Available prefixes in bucket:"
+      aws s3 ls "s3://${bucket}/" --endpoint "$S3_ENDPOINT" || echo "Failed to list bucket contents"
+      exit 1
+    fi
+
+    folder="${key%/*}/"
+    s3_full_url="s3://${bucket}/${folder}"
+    echo "[pg_backctl] Found latest backup: $s3_full_url"
+  fi
+
+  echo "[pg_backctl] ========================================="
+  echo "[pg_backctl] Downloading backup from S3"
+  echo "[pg_backctl] URL: $s3_full_url"
+  echo "[pg_backctl] Endpoint: $S3_ENDPOINT"
+  echo "[pg_backctl] Region: $AWS_DEFAULT_REGION"
+  echo "[pg_backctl] ========================================="
 
   aws s3 cp "$s3_full_url" /backup/ --endpoint "$S3_ENDPOINT" --recursive
 
+  echo "[pg_backctl] Download completed successfully"
+
+  # Check if backup.info exists (for WAL archiving backups)
   info="/backup/backup.info"
-  fetch_wals "$info" "$bucket"
+  if [ -f "$info" ]; then
+    echo "[pg_backctl] Found backup.info, fetching WAL files..."
+    fetch_wals "$info" "$bucket"
+  else
+    echo "[pg_backctl] No backup.info found (pg_basebackup format - WAL files included in backup)"
+  fi
 fi
 
 restore_backup

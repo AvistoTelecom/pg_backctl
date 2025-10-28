@@ -1,5 +1,9 @@
 .env
 .vscode
 
+# Configurations
 confs/
+recovery.conf
+backup.conf
+
 logs/

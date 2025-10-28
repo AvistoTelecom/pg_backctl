@@ -17,13 +17,13 @@ create_backup() {
   local user="${DB_USER:-postgres}"
   local compression_flag="${COMPRESSION_FLAG:-}"
 
-  echo "[ODO] Starting pg_basebackup from $host:$port as user $user"
-  echo "[ODO] Output directory: /backup"
+  echo "[pg_backctl] Starting pg_basebackup from $host:$port as user $user"
+  echo "[pg_backctl] Output directory: /backup"
 
   # Run pg_basebackup
   pg_basebackup -h "$host" -p "$port" -U "$user" -D /backup -Ft $compression_flag -P -v
 
-  echo "[ODO] Backup completed"
+  echo "[pg_backctl] Backup completed"
   ls -lh /backup
 }
 
@@ -33,7 +33,7 @@ upload_to_s3() {
   bucket="${bucket%/}"
   local label="${BACKUP_LABEL}"
 
-  echo "[ODO] Uploading backup to S3: s3://$bucket/$label/"
+  echo "[pg_backctl] Uploading backup to S3: s3://$bucket/$label/"
 
   # Configure AWS CLI
   aws configure set aws_access_key_id "$AWS_ACCESS_KEY_ID"
@@ -43,11 +43,11 @@ upload_to_s3() {
   # Upload files to S3
   aws s3 cp /backup/ "s3://$bucket/$label/" --recursive --endpoint-url "$S3_ENDPOINT"
 
-  echo "[ODO] Upload completed to s3://$bucket/$label/"
+  echo "[pg_backctl] Upload completed to s3://$bucket/$label/"
 }
 
 # Main logic
-echo "[ODO] Backup mode"
+echo "[pg_backctl] Backup mode"
 
 # Perform backup
 create_backup
@@ -56,12 +56,12 @@ create_backup
 if [[ -n "${S3_BACKUP_URL:-}" ]]; then
   # Check if aws command is available
   if ! command -v aws >/dev/null 2>&1; then
-    echo "[ODO] AWS CLI not found, cannot upload to S3" >&2
+    echo "[pg_backctl] AWS CLI not found, cannot upload to S3" >&2
     exit 10
   fi
   upload_to_s3
 else
-  echo "[ODO] Local backup mode - files saved to /backup"
+  echo "[pg_backctl] Local backup mode - files saved to /backup"
 fi
 
-echo "[ODO] Backup operation completed successfully"
+echo "[pg_backctl] Backup operation completed successfully"

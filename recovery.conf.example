@@ -1,0 +1,129 @@
+# -----------------------------
+# pg_backctl Recovery Configuration
+# -----------------------------
+#
+# This file contains configuration for pg_backctl database recovery/restore.
+# Copy this file to 'recovery.conf' and customize for your environment.
+#
+# Usage:
+#   ./import_db_backup.sh -c /path/to/recovery.conf
+#   ./import_db_backup.sh --config recovery.conf
+#
+# Note: Command-line arguments override config file values
+
+
+#------------------------------------------------------------------------------
+# BACKUP SOURCE
+#------------------------------------------------------------------------------
+
+[source]
+
+# Choose ONE of the following backup sources:
+
+# - S3 Backup Source -
+#s3_url = s3://mybucket                         # S3 bucket URL
+#s3_endpoint = https://s3.region.provider.com   # S3 endpoint URL
+
+# === BACKUP SELECTION MODE ===
+#
+# Choose ONE of the following modes:
+
+# - AUTO-DETECT MODE (recommended for scripts) -
+# Automatically restores the LATEST backup from a specific prefix
+# Examples:
+#   s3_search_prefix = backups/                 # For pg_backctl backups with prefix
+#   s3_search_prefix = /                        # For backups at bucket root level
+#   s3_search_prefix = postgresql-cluster/base/ # For other tools (backward compatible)
+#
+# Default: "postgresql-cluster/base/" (backward compatible)
+
+# - SPECIFIC BACKUP MODE (for point-in-time recovery) -
+# Restore a specific backup by full path
+# Example:
+#   s3_backup_path = backups/20250124T143000    # Exact backup to restore
+#
+# Note: If s3_backup_path is set, s3_search_prefix is ignored
+
+# - Local Backup Source -
+#path = /backups/postgres/20250124T143000       # Local backup directory
+                                                # Must contain base.tar.gz and pg_wal.tar.gz
+
+
+#------------------------------------------------------------------------------
+# TARGET DATABASE
+#------------------------------------------------------------------------------
+
+[target]
+
+# Docker volume and service to restore to (REQUIRED)
+
+volume_name = postgres-data                     # Docker volume name
+service = postgres                              # Docker Compose service name
+compose_file = docker-compose.yml              # Path to docker-compose file
+
+
+#------------------------------------------------------------------------------
+# RESTORE MODE
+#------------------------------------------------------------------------------
+
+[restore]
+
+# Choose ONE of the following restore modes:
+
+# - Mode 1: Standby Mode (-S flag) -
+# Creates a standby/replica server
+#standby = false
+
+# - Mode 2: Override Volume (-o flag) -
+# WARNING: This will DELETE the existing volume data!
+#override_volume = false
+
+# - Mode 3: New Volume (-V flag) -
+# Creates a new volume with the restored data (RECOMMENDED for production)
+#new_volume_name = postgres-data-restored
+
+
+#------------------------------------------------------------------------------
+# POSTGRESQL CONFIGURATION
+#------------------------------------------------------------------------------
+
+[postgres]
+
+# - PostgreSQL Version -
+
+#version = latest                               # PostgreSQL version (default: latest)
+
+# - Custom Configuration Files (optional) -
+# Replace configuration files after restore
+
+#replace_conf = confs/postgresql.auto.conf      # Custom postgresql.auto.conf
+#replace_pg_hba_conf = confs/pg_hba.conf        # Custom pg_hba.conf
+
+# - Post-Initialization Scripts (optional) -
+# SQL scripts to run after restore
+
+#post_init_conf = confs/post-init               # Directory with SQL scripts
+                                                # Scripts run in alphabetical order
+
+
+#------------------------------------------------------------------------------
+# AWS CREDENTIALS
+#------------------------------------------------------------------------------
+
+[aws]
+
+# AWS credentials for S3 restores
+# Can also be set via environment variables or .env file
+
+#access_key = YOUR_ACCESS_KEY
+#secret_key = YOUR_SECRET_KEY
+#region = us-east-1
+
+
+#------------------------------------------------------------------------------
+# DOCKER IMAGE
+#------------------------------------------------------------------------------
+
+[docker]
+
+image = pg_backctl:latest                       # pg_backctl Docker image for S3 operations
