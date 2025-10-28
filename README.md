@@ -1,307 +1,550 @@
 # pg_backctl
-PostgreSQL backup and restore made easy. From creating physical backups with pg_basebackup to fetching the right WALs and fine-tuning your configuration to the new environment, pg_backctl provides you with all the tools to backup and restore your databases.
 
-# Prerequisite
-- S3 with a your backup stored on it.
-	- Soon able to get backups from other sources.
-- a `.env` file with the following elements:
-  - `AWS_ACCESS_KEY`
-  - `AWS_SECRET_KEY`
-  - `AWS_REGION`
-- The backup must be performed by pg_basebackup
-- Backup must be gunziped
-- Logged to the registry where pg_backctl is stored or you already have the image locally
-- The volume names are the same as defined in the compose file (not the one given by docker volume ls e.g. just `db`, not `project_db`)
+> PostgreSQL backup and restore made easy with pg_basebackup
 
-# Usage
+[![License: PostgreSQL](https://img.shields.io/badge/License-PostgreSQL-blue.svg)](LICENSE)
+[![Docker](https://img.shields.io/badge/docker-ready-blue.svg)](https://www.docker.com/)
+[![PostgreSQL](https://img.shields.io/badge/postgresql-12%2B-blue.svg)](https://www.postgresql.org/)
+
+## Overview
+
+**pg_backctl** (PostgreSQL Backup Control) is a command-line tool that simplifies creating and restoring PostgreSQL physical backups using `pg_basebackup`. It handles the complexity of backup operations, S3 storage, WAL management, and configuration so you can focus on your data.
+
+### Key Features
+
+- 🚀 **Easy Backups** - Create physical backups with `pg_basebackup` (gzip/bzip2 compression)
+- 📦 **S3 Integration** - Upload/download backups to/from S3-compatible storage
+- 🔄 **WAL Management** - Automatic WAL fetching and replay for point-in-time recovery
+- 🔐 **Integrity Checks** - SHA256 checksums for backup verification
+- ⏰ **Retention Policies** - Auto-cleanup old backups (by count or age)
+- 🐳 **Docker Native** - Works seamlessly with Docker Compose
+- ⚙️ **Config Files** - INI-style configuration for easy automation
+- 🎯 **Multiple Modes** - Override, new volume, or standby/replica modes
+
+## Quick Start
+
+### Create a Backup
+
 ```bash
-# Restore from S3 backup, override current volume (not recommended for production)
-./import_db_backup.sh -u s3://mybucket/backup -e https://s3.myprovider.com -v db-volume-name -n db-service-name -f docker-compose.yml -o
+# 1. Copy the example config
+cp backup.conf.example backup.conf
 
-# Restore from S3 backup, create a new volume (recommended for production)
-./import_db_backup.sh -u s3://mybucket/backup -e https://s3.myprovider.com -v db-volume-name -n db-service-name -f docker-compose.yml -V restored-db-volume-name
-
-# Restore from local backup directory
-./import_db_backup.sh -P /backups/2025-05-20 -v db-volume-name -n db-service-name -f docker-compose.yml -o
-
-# Restore from S3 and override config after restore
-./import_db_backup.sh -u s3://mybucket/backup -e https://s3.myprovider.com -v db-volume-name -n db-service-name -f docker-compose.yml -c confs/postgresql.auto.conf -o
-
-# Restore from S3, create new volume, and override config
-./import_db_backup.sh -u s3://mybucket/backup -e https://s3.myprovider.com -v db-volume-name -n db-service-name -f docker-compose.yml -V restored-db-volume-name -c confs/postgresql.auto.conf
-
-# Standby mode restore (for creating a standby/replica)
-./import_db_backup.sh -u s3://mybucket/backup -e https://s3.myprovider.com -v db-volume-name -n db-service-name -f docker-compose.yml -S
-
-# Use a custom pg_backctl image and Postgres version
-./import_db_backup.sh -u s3://mybucket/backup -e https://s3.myprovider.com -v db-volume-name -n db-service-name -f docker-compose.yml -V restored-db-volume-name -O myrepo/pg_backctl:latest -p 15
+# 2. Edit backup.conf with your settings
+# 3. Run backup
+./create_backup.sh -c backup.conf
 ```
-### Args
-- -u: S3 backup URL
-- -e: S3 endpoint 
-- -v: volume name
-- -n: name the service to down (e.g. db)
-- -f: path to the docker compose file
-- -c: relace configuration
-- -o: override volume
-- -V: new volume name
 
-#### optionnal
-- -c: replace postgresql.auto.conf (uses the one defined in `confs` folder)
-- -o: override the volume (DO NOT USE IN PROD, USE -V INSTEAD)
-- -V: name of the new volume used for restoration
-- -a: AWS access key  => should be defined in `.env`
-- -s: AWS secret key  => should be defined in `.env`
-- -r: AWS regioni     => should be defined in `.env`
+### Restore a Backup
 
-#### -u: S3 backup URL
-S3 URL pointing to the backup.
+```bash
+# 1. Copy the example config
+cp recovery.conf.example recovery.conf
 
-#### -e: S3 endpoint
-S3 endpoint, required when using AWS CLI to request for other sources than AWS (like OVH)
+# 2. Edit recovery.conf with your settings
+# 3. Run restore
+./import_db_backup.sh -c recovery.conf
+```
 
-#### -v: volume name
-Name of the volume currently containing the database.
+That's it! 🎉
 
-#### -n: name of the db service
-Used to stop the service in order to perform the restoration.
+## Installation
 
-#### -f: compose file path
-Path to the compose file that manage the DB you want to restore.
+### Prerequisites
 
-**IMPORTANT** the file path must at least contain the parent folder name. It can be required later on.
+- **Docker** and **Docker Compose** installed
+- S3-compatible storage (AWS S3, OVH, MinIO, etc.) or local storage
+- PostgreSQL database running in Docker Compose
+- `.env` file with AWS credentials (for S3 mode):
+  ```bash
+  AWS_ACCESS_KEY=your_access_key
+  AWS_SECRET_KEY=your_secret_key
+  AWS_REGION=us-east-1
+  ```
 
-#### -c: replace configuration
-Will look in the `confs/` folder for a `postgres.auto.conf` file and if it exists it will replace the current auto conf with this file.
-This allows you to override postgres configuration after the restoration.
+### Building the Docker Image
 
-> If you use -c without having a `postgres.auto.conf` in the `confs/` you will get a **code 3 error**
+```bash
+docker build -t pg_backctl:latest .
+```
 
-#### -o: override volume
-Instruct the script to perform the restoration on the current volume.
-The data in the volume will be **deleted** and replaced by the data from the backup.
+## Configuration
 
-#### -V: new volume name
-Give the script a name for a new volume that will replace the current one.
-This option will lead to the compose file also being updated with the new volume name.
+### Backup Configuration
 
-The old volume will be preserved in case of error, you will need to clean it up manualy when no longer needed.
-The old compose file will also be preserved by adding a .bak suffix to the original version.
+Create `backup.conf` from the example:
 
-#### -I: post init script
-Used to specify a folder containing SQL scripts to be executed **after the database is restored but before the recovery process completes**. 
-This is useful for running custom initialization, migrations, or data fixes automatically as part of the restore process.
+```ini
+[database]
+service = postgres
+compose_file = docker-compose.yml
+user = replication_user
 
-**How it works:**
-- All `.sql` files will be executed in alphabetical order.
-- Each script is executed using a user defined in the `.env` with the variable `POST_INIT_SCRIPT_USER` and `POST_INIT_SCRIPT_PASSWORD`.
-- Each script will run against the DB defined in the `.env` with the variable `POST_INIT_SCRIPT_DATABASE`.
-  You can override this value per-script by using the connect command in your script: example: `\c mydb`
+[destination]
+s3_url = s3://mybucket
+s3_endpoint = https://s3.provider.com
+s3_prefix = backups
 
+[backup]
+compression = gzip
+retention_count = 10
+```
 
-### Error codes
-| Code | Meaning                                                                 |
-|------|-------------------------------------------------------------------------|
-| 3    | -c used but postgresql.auto.conf missing (see confs/postgresql.auto.conf) |
-| 4    | Unsafe volume operation (e.g. -o and -S or -V and -o/-S together)         |
-| 10   | Required command not found (docker, sed, grep, etc.)                      |
-| 11   | Missing required environment variable (AWS keys, region, etc.)            |
-| 12   | Missing required argument (volume, service, compose file, etc.)           |
-| 13   | Local backup files missing (base.tar.gz or pg_wal.tar.gz)                 |
-| 14   | Usage error (bad argument combination, e.g. -P with -u/-e)                |
-| 99   | Unknown error or mode                                                     |
+See [backup.conf.example](backup.conf.example) for all options.
 
-**All errors print a clear message to stderr before exiting with the code above.**
+### Recovery Configuration
 
-#### Error code details and troubleshooting:
-- **3**: `-c` was used to override the Postgres config, but the file `postgresql.auto.conf` was not found in the `confs/` folder.
-  - **Why:** The script expects this file to exist if you use `-c`.
-  - **How to fix:** Place your desired `postgresql.auto.conf` in the `confs/` directory or specify the correct path with `-c`.
+Create `recovery.conf` from the example:
 
-- **4**: Unsafe volume operation. You tried to use mutually exclusive options (e.g. `-o` and `-S`, or `-V` with `-o`/`-S`).
-  - **Why:** These options cannot be combined for safety reasons (to avoid accidental data loss or ambiguous actions).
-  - **How to fix:** Use only one of these options at a time. For production, prefer `-V` to create a new volume.
+```ini
+[source]
+s3_url = s3://mybucket
+s3_endpoint = https://s3.provider.com
+s3_search_prefix = backups/
 
-- **10**: A required command (such as `docker`, `sed`, or `grep`) is not installed or not in your `PATH`.
-  - **Why:** The script relies on these tools to function.
-  - **How to fix:** Install the missing command using your package manager (e.g. `apt install docker sed grep`).
+[target]
+volume_name = pgdata
+service = postgres
+compose_file = docker-compose.yml
 
-- **11**: One or more required environment variables are missing (e.g. AWS credentials or region).
-  - **Why:** The script needs these variables to access S3 and perform operations.
-  - **How to fix:** Ensure your `.env` file is present and contains `AWS_ACCESS_KEY`, `AWS_SECRET_KEY`, and `AWS_REGION`.
+[restore]
+new_volume_name = pgdata-restored
+```
 
-- **12**: A required argument is missing (e.g. volume name, service name, or compose file path).
-  - **Why:** The script cannot proceed without these essential details.
-  - **How to fix:** Provide all required arguments as shown in the usage examples.
+See [recovery.conf.example](recovery.conf.example) for all options.
 
-- **13**: Local backup files are missing (`base.tar.gz` or `pg_wal.tar.gz` not found in the specified backup path).
-  - **Why:** The script expects both files for a valid local backup restore.
-  - **How to fix:** Ensure both files exist in the backup directory you specify with `-P`.
+## Usage Examples
 
-- **14**: Usage error. You provided an invalid or conflicting combination of arguments (e.g. using `-P` with `-u`/`-e`).
-  - **Why:** Some options are mutually exclusive or require specific combinations.
-  - **How to fix:** Review your command and use only compatible options together. See the usage examples above.
+### Backup Scenarios
 
-- **99**: An unknown error or invalid mode was encountered.
-  - **Why:** This is a catch-all for unexpected situations.
-  - **How to fix:** Double-check your arguments and environment. If the problem persists, review the script or open an issue.
+#### Daily Automated Backups
 
-If you encounter an error, check the message printed to stderr for details and refer to the table and explanations above to understand and resolve the exit code.
+```bash
+# Add to crontab
+0 2 * * * /path/to/pg_backctl/create_backup.sh -c /path/to/backup.conf
+```
 
-## Docker image overview
-When run, the docker image expects 4 environment variables:
-- AWS_ACCESS_KEY_ID
-- AWS_SECRET_ACCESS_KEY
-- AWS_DEFAULT_REGION
-- S3_BACKUP_URL
+#### Manual Backup with Custom Label
 
-During execution, the docker image will:
+```bash
+./create_backup.sh -c backup.conf -l "pre-migration-$(date +%Y%m%d)"
+```
 
-1. **Grab Latest Backup**: It fetches the latest backup from the S3 bucket.
-2. **Clean the volume**: It removes all the content of the /data folder.
-3. **Restore basebackup**: It restores the basebackup that contains a checkpoint of the database.
-4. **Restore WAL**: It restores the WAL to get the database to the last consistent state.
-5. **Create recovery.signal**: This file is used to tell that the database has to perform a recovery.
-6. **Change owner**: It changes the owner of the /data folder to 999:999 which is the postgres user and group.
+#### Local Backup (No S3)
 
-# What is pg_backctl?
+```bash
+./create_backup.sh \
+  -n postgres \
+  -f docker-compose.yml \
+  -P /backups/postgres
+```
 
-**pg_backctl** is a tool designed to streamline both the creation and restoration of PostgreSQL physical backups using **pg_basebackup**. It aims to simplify the more complex aspects of backup and recovery without diving into tricky manual steps.
+#### Backup with bzip2 Compression
 
-## Why pg_backctl?
-In the attempt of matching Postgres recommended way of doing backups, we chose to provide a tool that improves backup restoration procedures. PostgreSQL offers two primary methods for backups:
-- **pg_dump** (logical backups)
-- **pg_basebackup** (physical backups)
-They both serve the same purpose but differ significantly in approach, performance, and restoration complexity.
-### Comparison Matrix
+Edit `backup.conf`:
+```ini
+[backup]
+compression = bzip2  # Better compression, slower
+```
 
-| **Criteria**           | **pg_dump**                                           | **pg_basebackup**                                               |
-| ---------------------- | ----------------------------------------------------- | --------------------------------------------------------------- |
-| **Backup Type**        | Logical                                               | Physical                                                        |
-| **Output**             | SQL scripts or custom binary format                   | Entire PostgreSQL data directory (provides compression options) |
-| **Scope**              | Selected tables / databases                           | Full database cluster (including config)                        |
-| **Restoration**        | Flexible (can restore to different versions)          | Requires same version & structure (physical copy)               |
-| **Use Cases**          | Upgrades, partial backups, portability, dev scripting | Clean full backups, fast full restores, PITR                    |
-| **Performance Impact** | Higher CPU (during dump)                              | Primarily I/O-bound                                             |
-| **Ease of Setup**      | Simple, few prerequisites                             | Needs more prep (replication config, etc.)                      |
+### Recovery Scenarios
 
-### TL;DR
-Overall, **pg_basebackup** has advantages over **pg_dump**:
-- uses **replication privilege** which does not need a password (with our `pg_hba` config)
-- enables **PITR**
-- **fast** full restores
-- strong data **integrity**. 
+#### Restore Latest Backup to New Volume (Recommended)
 
-However, there are some trade-offs:
-- Additional **configuration** requirements
-- More **complex** restoration steps
+```bash
+# Safest option - creates new volume, keeps original
+./import_db_backup.sh -c recovery.conf
+```
 
-## How It Works (pg_backctl)
+#### Restore Specific Backup (Point-in-Time Recovery)
 
-pg_backctl is started on the db volume in order to perform the following steps:
+Edit `recovery.conf`:
+```ini
+[source]
+s3_backup_path = backups/20251027T143000  # Specific backup
+```
 
-- **Fetch Latest Backup**: pg_backctl locates and retrieves the most recent backup from a given S3 bucket.
-    
-- **Clean the Volume**: The contents of the `data` folder are wiped.
-    
-- **Restore Basebackup**: The tool lays down the physical backup checkpoint into `data`.
-    
-- **Restore WAL**: Like basebackup, it loads the Write-Ahead Logs (WAL).
-    
-- **Create `recovery.signal`**: This file signals to PostgreSQL that it must enter recovery mode upon startup.
-    
-- **Adjust Ownership**: Sets the owner and group of the `data` folder to `999:999` (the Postgres user).
-    
-- **Restart the Database**: Once the necessary files and permissions are in place, the database service is restarted.
-    
-- **Promote the Database**: Finally, the node is promoted, making it into the new primary (master) database if required.
+Then restore:
+```bash
+./import_db_backup.sh -c recovery.conf
+```
 
----
+#### Restore and Override Existing Volume
 
-## Backup Checksums for External Verification
+⚠️ **WARNING:** This deletes existing data!
 
-pg_backctl automatically generates SHA256 checksums for all backups, enabling external verification tools to validate backup integrity.
+```bash
+./import_db_backup.sh -c recovery.conf -o
+```
 
-### What Gets Generated
+#### Create Standby/Replica Server
 
-Each backup includes two files:
+```bash
+./import_db_backup.sh -c recovery.conf -S
+```
 
-1. **`backup.sha256`** - Standard SHA256 checksum manifest
-   ```
-   abc123def456...  ./base.tar.gz
-   def456abc789...  ./pg_wal.tar.gz
-   ```
+#### Restore from Local Backup
 
-2. **`backup.sha256.info`** - Metadata describing the checksum format
-   - Backup timestamp and label
-   - Checksum algorithm used (SHA256)
-   - Tool used (sha256sum)
-   - List of all files
-   - Verification instructions
+```bash
+./import_db_backup.sh \
+  -P /backups/20251027T143000 \
+  -v pgdata \
+  -n postgres \
+  -f docker-compose.yml \
+  -V pgdata-restored
+```
 
-### Integration with External Tools
+#### Restore with Custom Configuration
 
-pg_backctl **does not** perform automatic verification after upload. This is intentional - verification should be handled by your dedicated backup verification/monitoring tool.
+```bash
+./import_db_backup.sh \
+  -c recovery.conf \
+  -C confs/postgresql.auto.conf \
+  -H confs/pg_hba.conf
+```
+
+## Advanced Features
+
+### Backup Checksums
+
+pg_backctl automatically generates SHA256 checksums for all backup files, enabling external verification tools to validate backup integrity.
+
+Each backup includes:
+- `backup.sha256` - SHA256 checksums for all files
+- `backup.sha256.info` - Metadata describing the checksum format
+
+**Manual Verification:**
+```bash
+# Download backup
+aws s3 cp s3://bucket/backups/20251027T143000/ ./backup --recursive
+
+# Verify integrity
+cd backup
+sha256sum -c backup.sha256
+```
 
 **Why external verification?**
-- Separates concerns (backup vs. verification)
+- Separates concerns (backup creation vs. verification)
 - Allows scheduled verification independent of backup timing
 - Integrates with your existing monitoring stack
 - Can verify old backups for bit rot detection
 
-### Manual Verification
+### Retention Policies
 
-You can verify any backup manually at any time:
+Automatically cleanup old backups from S3 to save storage costs.
+
+**Keep last N backups:**
+```ini
+[backup]
+retention_count = 10  # Keep last 10 backups
+```
+
+**Keep backups for N days:**
+```ini
+[backup]
+retention_days = 30  # Keep backups for 30 days
+```
+
+**Note:** `retention_count` takes precedence if both are set.
+
+### S3 Path Flexibility
+
+pg_backctl supports multiple S3 path structures:
+
+```ini
+# Organized by prefix (recommended)
+s3_prefix = backups
+
+# Backward compatible with other tools
+s3_prefix = postgresql-cluster/base
+
+# Root level storage
+s3_prefix =
+```
+
+**Auto-detect vs. Specific Backup:**
+
+```ini
+# Auto-detect: restore latest backup
+s3_search_prefix = backups/
+
+# Specific: restore exact backup
+s3_backup_path = backups/20251027T143000
+```
+
+### Restore Modes
+
+#### 1. New Volume Mode (Recommended)
+Creates a new volume, leaving the original intact.
 
 ```bash
-# For S3 backups
-aws s3 cp s3://bucket/backups/20251027T143000/ ./backup --recursive --endpoint-url https://s3.provider.com
-cd backup
-sha256sum -c backup.sha256
-
-# For local backups
-cd /path/to/backup/20251027T143000
-sha256sum -c backup.sha256
+./import_db_backup.sh -c recovery.conf -V pgdata-restored
 ```
 
-Expected output:
+#### 2. Override Mode
+⚠️ Replaces existing volume data (destructive).
+
+```bash
+./import_db_backup.sh -c recovery.conf -o
 ```
-./backup_manifest: OK
-./base.tar.gz: OK
-./pg_wal.tar.gz: OK
+
+#### 3. Standby Mode
+Creates a standby/replica server.
+
+```bash
+./import_db_backup.sh -c recovery.conf -S
 ```
 
-### Benefits
+## CLI Reference
 
-- ✅ Standard format works with any verification tool
-- ✅ Enables detection of corruption or bit rot
-- ✅ Provides audit trail for compliance
-- ✅ Automatic generation - no configuration needed
-- ✅ Metadata file makes integration easy
+### create_backup.sh
 
-## What's Next?
+```bash
+./create_backup.sh [OPTIONS]
 
-1. [x] **Update Postgres conf if needed** ⭐
-2. [ ] **Mount the S3 volume instead of downloading it** 🚀
-3. [x] **Support for specific backup selection instead of latest** 🔖
-4. [x] Add an arg to create a new volume.
-	1. [x] Have a secondary mod to mount a temporary DB
-5. [ ] Fetch backups from other sources than a S3
-6. [ ] Improve Documentation
-	1. [ ] Use cases
-	2. [ ] Recommendation of usage (screen / tmux)
-> PROD READY
-7. [x] Add preliminary checks & robustness
-	1. [x] Check disk space
-	2. [ ] Check format of input data
-	3. [ ] Add checkpoints to avoid full restart in case of failure
-8. [x] Backup integrity verification (SHA256 checksums)
-9. [ ] Support for incremental backups
-10. [ ] Backup encryption
+Options:
+  -c, --config FILE     Load configuration from file
+  -n SERVICE_NAME       Docker Compose service name
+  -f COMPOSE_FILEPATH   Path to docker-compose file
+  -u S3_BACKUP_URL      S3 backup URL (e.g., s3://mybucket)
+  -e S3_ENDPOINT        S3 endpoint URL
+  -P BACKUP_PATH        Local backup path (alternative to S3)
+  -l BACKUP_LABEL       Custom backup label
+  -C COMPRESSION        Compression: gzip, bzip2, none (default: gzip)
+  -U DB_USER            Database user (default: postgres)
+  -O IMAGE              pg_backctl docker image (default: pg_backctl:latest)
+  -h, --help            Show help message
+```
 
+**Priority:** `.env` < config file < CLI arguments
 
-### For much later
+### import_db_backup.sh
 
-- Support for PITR 
-- Enhanced backup management features
-	- Especialy for non-kube projects
+```bash
+./import_db_backup.sh [OPTIONS]
+
+Options:
+  -c, --config FILE     Load configuration from file
+  -u S3_BACKUP_URL      S3 backup URL
+  -e S3_ENDPOINT        S3 endpoint URL
+  -P BACKUP_PATH        Local backup path
+  -v VOLUME_NAME        Docker volume name
+  -n SERVICE_NAME       Docker Compose service name
+  -f COMPOSE_FILEPATH   Path to docker-compose file
+  -o                    Override volume mode (WARNING: deletes data!)
+  -V NEW_VOLUME_NAME    New volume mode (recommended)
+  -S                    Standby mode
+  -C REPLACE_CONF       Replace postgresql.auto.conf after restore
+  -H REPLACE_PG_HBA     Replace pg_hba.conf after restore
+  -I POST_INIT_CONF     Directory with post-init SQL scripts
+  -O IMAGE              pg_backctl docker image
+  -h, --help            Show help message
+```
+
+## Architecture
+
+### How Backups Work
+
+1. **Connect to Database** - Uses `pg_basebackup` via Docker Compose service
+2. **Create Physical Backup** - Generates base backup + WAL files in tar format
+3. **Compress** - Apply gzip or bzip2 compression
+4. **Generate Checksums** - Create SHA256 manifest (backup.sha256)
+5. **Upload to S3** - Transfer all files to S3-compatible storage
+6. **Apply Retention** - Cleanup old backups based on retention policy
+7. **Log Results** - JSON logs for monitoring (New Relic, etc.)
+
+**Backup Structure:**
+```
+s3://bucket/backups/20251027T143000/
+├── base.tar.gz          # Base backup
+├── pg_wal.tar.gz        # WAL files
+├── backup_manifest      # PostgreSQL manifest
+├── backup.sha256        # SHA256 checksums
+└── backup.sha256.info   # Checksum metadata
+```
+
+### How Recovery Works
+
+1. **Download Backup** - Fetch backup files from S3 or use local path
+2. **Clean Volume** - Wipe `/data` directory contents
+3. **Restore Base Backup** - Extract base.tar.gz to `/data`
+4. **Restore WAL Files** - Extract pg_wal.tar.gz to `/data/pg_wal`
+5. **Create recovery.signal** - Tell PostgreSQL to perform recovery
+6. **Start Database** - Launch PostgreSQL container
+7. **Replace Configs** - Apply custom postgresql.auto.conf / pg_hba.conf (optional)
+8. **Run Post-Init Scripts** - Execute SQL scripts (optional)
+
+### Compatibility
+
+**PostgreSQL Versions:** 12, 13, 14, 15, 16, 17+
+
+**Backup Formats Supported:**
+- pg_backctl format: `base.tar.gz` + `pg_wal.tar.gz`
+- Legacy format: `data.tar.bz2` (backward compatible)
+
+**S3 Providers:**
+- AWS S3
+- OVH Cloud Storage
+- DigitalOcean Spaces
+- MinIO
+- Any S3-compatible storage
+
+## Troubleshooting
+
+### Common Issues
+
+#### Error: "No backups found in s3://bucket/prefix"
+
+**Cause:** S3 path mismatch or wrong prefix
+
+**Solution:**
+1. Check `s3_search_prefix` in recovery.conf
+2. List bucket contents: `aws s3 ls s3://bucket/ --endpoint-url $endpoint`
+3. Use `/` to search root level
+
+#### Error: "Insufficient disk space"
+
+**Cause:** Not enough free disk space for backup
+
+**Solution:**
+1. Check disk space: `df -h /tmp`
+2. Increase `min_disk_space_gb` threshold or free up space
+3. For S3 backups, ensure /tmp has enough space
+
+#### Error: "S3 upload failed"
+
+**Cause:** AWS credentials, network, or endpoint issue
+
+**Solution:**
+1. Verify credentials in `.env`
+2. Test S3 connection: `aws s3 ls s3://bucket --endpoint-url $endpoint`
+3. Check S3 endpoint URL is correct
+
+#### Backup verification failed
+
+**Cause:** Files missing or corrupted during upload
+
+**Solution:**
+1. Retry backup
+2. Check network stability
+3. Verify S3 endpoint reliability
+
+### Error Codes
+
+| Code | Description | Common Cause |
+|------|-------------|--------------|
+| 10 | Missing command | Docker or required tool not installed |
+| 11 | Missing env variable | AWS credentials not set |
+| 12 | Missing argument | Required CLI argument not provided |
+| 14 | Usage error | Invalid argument combination |
+| 15 | Backup failed | Backup or upload operation failed |
+| 16 | Insufficient disk space | Not enough free space |
+
+### FAQ
+
+**Q: Can I backup multiple databases?**
+A: Yes, `pg_basebackup` backs up the entire PostgreSQL cluster (all databases).
+
+**Q: How long do backups take?**
+A: Depends on database size. For 10GB: ~5-10 minutes with gzip.
+
+**Q: Can I restore to a different PostgreSQL version?**
+A: Only within the same major version (e.g., 15.x to 15.y is OK, 15.x to 16.x is not).
+
+**Q: What's the difference between gzip and bzip2?**
+A: gzip is faster, bzip2 has better compression. For most cases, use gzip.
+
+**Q: How do I test my backups?**
+A: Use the new volume mode (-V) to restore to a test volume periodically.
+
+## Monitoring & Observability
+
+pg_backctl generates JSON logs for integration with monitoring tools like New Relic.
+
+**Log Location:** `logs/backup.json`
+
+**Example Log Entry:**
+```json
+{
+  "timestamp": "2025-10-27T16:52:10.123Z",
+  "level": "INFO",
+  "message": "Backup completed successfully",
+  "event_type": "backup_completed",
+  "backup_label": "20251027T143000",
+  "duration_seconds": 450,
+  "backup_size_mb": 1024,
+  "status": "success"
+}
+```
+
+**New Relic Integration:**
+See [newrelic-logging-example.yml](newrelic-logging-example.yml) for configuration.
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+### Development Setup
+
+1. Clone the repository
+2. Make your changes
+3. Test thoroughly
+4. Submit a PR with a clear description
+
+### Reporting Issues
+
+Please use GitHub Issues to report bugs or request features.
+
+Include:
+- pg_backctl version
+- PostgreSQL version
+- Error messages and logs
+- Steps to reproduce
+
+## Security
+
+### Audit Results
+
+See [AUDIT.md](AUDIT.md) for the security and reliability audit results.
+
+**Current Status:** ⚠️ Development tool - not production-ready without hardening
+
+**Recommended for production:**
+- ✅ Add encryption at rest
+- ✅ Use IAM roles instead of credentials
+- ✅ Implement backup testing automation
+- ✅ Add retention dry-run mode
+- ✅ Add recovery safety prompts
+
+## License
+
+PostgreSQL License - See [LICENSE](LICENSE) file for details
+
+## Roadmap
+
+### Completed ✅
+- [x] Physical backups with pg_basebackup
+- [x] S3 storage integration
+- [x] Config file system
+- [x] Retention policies
+- [x] SHA256 checksums
+- [x] Disk space checks
+- [x] JSON logging for observability
+
+### In Progress 🚧
+- [ ] Backup encryption (GPG/AWS KMS)
+- [ ] Automated restore testing
+- [ ] Backup locking (prevent concurrent backups)
+
+### Planned 📋
+- [ ] Incremental backups
+- [ ] Point-in-time recovery (PITR) with WAL archiving
+- [ ] Multi-database selection (pg_dump mode)
+- [ ] Email/webhook notifications
+- [ ] Web UI for backup management
+- [ ] Support for non-Docker installations
+
+---
+
+**Made with ❤️ by the Avisto Telecom team**
+
+For issues and feature requests, please visit: https://github.com/AvistoTelecom/pg_backctl/issues
