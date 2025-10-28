@@ -1,5 +1,5 @@
-# ODO
-Restoring a base backup made easy. From fetching the right WALS to fine tunning your configuration to the new environment, ODO will provides you with many tools to restore your backups.
+# pg_backctl
+PostgreSQL backup and restore made easy. From creating physical backups with pg_basebackup to fetching the right WALs and fine-tuning your configuration to the new environment, pg_backctl provides you with all the tools to backup and restore your databases.
 
 # Prerequisite
 - S3 with a your backup stored on it.
@@ -10,8 +10,8 @@ Restoring a base backup made easy. From fetching the right WALS to fine tunning 
   - `AWS_REGION`
 - The backup must be performed by pg_basebackup
 - Backup must be gunziped
-- Logged to the registry where odo is storred or you already have the image localy
-- The volume names are the same as defined in the compose file (not the one given by docker volume ls e.g. just `db`, not `odo_db`)
+- Logged to the registry where pg_backctl is stored or you already have the image locally
+- The volume names are the same as defined in the compose file (not the one given by docker volume ls e.g. just `db`, not `project_db`)
 
 # Usage
 ```bash
@@ -33,8 +33,8 @@ Restoring a base backup made easy. From fetching the right WALS to fine tunning 
 # Standby mode restore (for creating a standby/replica)
 ./import_db_backup.sh -u s3://mybucket/backup -e https://s3.myprovider.com -v db-volume-name -n db-service-name -f docker-compose.yml -S
 
-# Use a custom ODO image and Postgres version
-./import_db_backup.sh -u s3://mybucket/backup -e https://s3.myprovider.com -v db-volume-name -n db-service-name -f docker-compose.yml -V restored-db-volume-name -O myrepo/odo:latest -p 15
+# Use a custom pg_backctl image and Postgres version
+./import_db_backup.sh -u s3://mybucket/backup -e https://s3.myprovider.com -v db-volume-name -n db-service-name -f docker-compose.yml -V restored-db-volume-name -O myrepo/pg_backctl:latest -p 15
 ```
 ### Args
 - -u: S3 backup URL
@@ -164,11 +164,11 @@ During execution, the docker image will:
 5. **Create recovery.signal**: This file is used to tell that the database has to perform a recovery.
 6. **Change owner**: It changes the owner of the /data folder to 999:999 which is the postgres user and group.
 
-# What is ODO?
+# What is pg_backctl?
 
-**ODO** (Optimized Data Operation) is a tool designed to streamline the restoration of backups made with **pg_basebackup**. It aims to simplify the more complex aspects of physical backups restoration process without diving into tricky manual steps.
+**pg_backctl** is a tool designed to streamline both the creation and restoration of PostgreSQL physical backups using **pg_basebackup**. It aims to simplify the more complex aspects of backup and recovery without diving into tricky manual steps.
 
-## Why ODO?
+## Why pg_backctl?
 In the attempt of matching Postgres recommended way of doing backups, we chose to provide a tool that improves backup restoration procedures. PostgreSQL offers two primary methods for backups:
 - **pg_dump** (logical backups)
 - **pg_basebackup** (physical backups)
@@ -196,11 +196,11 @@ However, there are some trade-offs:
 - Additional **configuration** requirements
 - More **complex** restoration steps
 
-## How It Works (ODO)
+## How It Works (pg_backctl)
 
-ODO is started on the db volume in order to perform the following steps:
+pg_backctl is started on the db volume in order to perform the following steps:
 
-- **Fetch Latest Backup**: ODO locates and retrieves the most recent CNPG backup from a given S3 bucket.
+- **Fetch Latest Backup**: pg_backctl locates and retrieves the most recent backup from a given S3 bucket.
     
 - **Clean the Volume**: The contents of the `data` folder are wiped.
     
@@ -218,27 +218,90 @@ ODO is started on the db volume in order to perform the following steps:
 
 ---
 
+## Backup Checksums for External Verification
+
+pg_backctl automatically generates SHA256 checksums for all backups, enabling external verification tools to validate backup integrity.
+
+### What Gets Generated
+
+Each backup includes two files:
+
+1. **`backup.sha256`** - Standard SHA256 checksum manifest
+   ```
+   abc123def456...  ./base.tar.gz
+   def456abc789...  ./pg_wal.tar.gz
+   ```
+
+2. **`backup.sha256.info`** - Metadata describing the checksum format
+   - Backup timestamp and label
+   - Checksum algorithm used (SHA256)
+   - Tool used (sha256sum)
+   - List of all files
+   - Verification instructions
+
+### Integration with External Tools
+
+pg_backctl **does not** perform automatic verification after upload. This is intentional - verification should be handled by your dedicated backup verification/monitoring tool.
+
+**Why external verification?**
+- Separates concerns (backup vs. verification)
+- Allows scheduled verification independent of backup timing
+- Integrates with your existing monitoring stack
+- Can verify old backups for bit rot detection
+
+### Manual Verification
+
+You can verify any backup manually at any time:
+
+```bash
+# For S3 backups
+aws s3 cp s3://bucket/backups/20251027T143000/ ./backup --recursive --endpoint-url https://s3.provider.com
+cd backup
+sha256sum -c backup.sha256
+
+# For local backups
+cd /path/to/backup/20251027T143000
+sha256sum -c backup.sha256
+```
+
+Expected output:
+```
+./backup_manifest: OK
+./base.tar.gz: OK
+./pg_wal.tar.gz: OK
+```
+
+### Benefits
+
+- ✅ Standard format works with any verification tool
+- ✅ Enables detection of corruption or bit rot
+- ✅ Provides audit trail for compliance
+- ✅ Automatic generation - no configuration needed
+- ✅ Metadata file makes integration easy
+
 ## What's Next?
 
 1. [x] **Update Postgres conf if needed** ⭐
 2. [ ] **Mount the S3 volume instead of downloading it** 🚀
-3. [ ] **Support for specific backup selection instead of latest** 🔖
-4. [x] Add an arg to create a new volume. 
+3. [x] **Support for specific backup selection instead of latest** 🔖
+4. [x] Add an arg to create a new volume.
 	1. [x] Have a secondary mod to mount a temporary DB
 5. [ ] Fetch backups from other sources than a S3
 6. [ ] Improve Documentation
 	1. [ ] Use cases
 	2. [ ] Recommendation of usage (screen / tmux)
 > PROD READY
-7. [ ] Add preliminary checks & robustness
-	1. [ ] Check disk space 
+7. [x] Add preliminary checks & robustness
+	1. [x] Check disk space
 	2. [ ] Check format of input data
 	3. [ ] Add checkpoints to avoid full restart in case of failure
-8. [ ] Support for incremental backups
+8. [x] Backup integrity verification (SHA256 checksums)
+9. [ ] Support for incremental backups
+10. [ ] Backup encryption
 
 
 ### For much later
 
 - Support for PITR 
-- Rework of backups (May not be handled by ODO)
+- Enhanced backup management features
 	- Especialy for non-kube projects
