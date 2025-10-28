@@ -4,7 +4,7 @@
 
 [![License: PostgreSQL](https://img.shields.io/badge/License-PostgreSQL-blue.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/docker-ready-blue.svg)](https://www.docker.com/)
-[![PostgreSQL](https://img.shields.io/badge/postgresql-12%2B-blue.svg)](https://www.postgresql.org/)
+[![PostgreSQL](https://img.shields.io/badge/postgresql-16%2B-blue.svg)](https://www.postgresql.org/)
 
 ## Overview
 
