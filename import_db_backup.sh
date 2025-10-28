@@ -286,8 +286,12 @@ replace_init_configuration() {
 # Function replace conf
 replace_configuration() {
   if [ -n "$replace_conf" ]; then
+    echo "> Replacing postgresql.auto.conf with custom configuration..."
     docker compose -f "$compose_filepath" cp "$replace_conf" "$service":/var/lib/postgresql/data/postgresql.auto.conf
     docker compose -f "$compose_filepath" restart "$service"
+    echo "  ✓ Configuration replaced and service restarted"
+  else
+    echo "> Skipping postgresql.auto.conf replacement (not configured)"
   fi
 }
 
@@ -332,8 +336,12 @@ post_init_script() {
 # Function to copy pg_hba.conf into the container
 replace_pg_hba() {
   if [ -n "$replace_pg_hba_conf" ]; then
+    echo "> Replacing pg_hba.conf with custom configuration..."
     docker compose -f "$compose_filepath" cp "$replace_pg_hba_conf" "$service":/var/lib/postgresql/data/pg_hba.conf
     docker compose -f "$compose_filepath" restart "$service"
+    echo "  ✓ pg_hba.conf replaced and service restarted"
+  else
+    echo "> Skipping pg_hba.conf replacement (not configured)"
   fi
 }
 
@@ -460,6 +468,14 @@ case $mode in
     docker run -d --rm \
     -v PG_BACKCTL_STANDBY_VOLUME:/var/lib/postgresql/data \
     postgres:"$pgversion"
+
+    echo ""
+    echo "========================================="
+    echo "✓ Standby database started successfully!"
+    echo "========================================="
+    echo "Volume: PG_BACKCTL_STANDBY_VOLUME"
+    echo "PostgreSQL version: $pgversion"
+    echo ""
     ;;
   2)
     # Run recovery in override mode
@@ -511,7 +527,14 @@ case $mode in
       up_db
       replace_pg_hba
     fi
-    
+
+    echo ""
+    echo "========================================="
+    echo "✓ Recovery completed successfully!"
+    echo "========================================="
+    echo "Database restored to volume: $vol_name"
+    echo "Service: $service (running)"
+    echo ""
     ;;
   3)
     # Run recovery on new volume mode
@@ -534,8 +557,21 @@ case $mode in
     up_db
     replace_configuration
     replace_pg_hba
+    echo ""
+    echo "========================================="
+    echo "✓ Recovery completed successfully!"
+    echo "========================================="
+    echo "Database restored to volume: $new_volume_name"
+    echo "Service: $service"
+    echo "Compose file: $compose_filepath"
+    echo ""
     ;;
   *)
   die "Unknown error or mode" $ERR_UNKNOWN
   ;;
 esac
+
+# Final success message for all modes
+echo ""
+echo "✓ Database recovery completed successfully"
+echo ""
