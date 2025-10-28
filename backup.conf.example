@@ -74,6 +74,19 @@ compression = gzip
 image = pg_backctl:latest
 
 [advanced]
-# Future features (not yet implemented)
+# Backup checksums (automatic - always enabled)
+# pg_backctl automatically generates and uploads:
+#  1. backup.sha256 - SHA256 checksums for all backup files
+#  2. backup.sha256.info - Metadata describing the checksum format
+#
+# These files enable external verification tools to validate backup integrity.
+# No automatic verification is performed by pg_backctl - delegate to your
+# monitoring/verification tool of choice.
+#
+# Manual verification example:
+#   aws s3 cp s3://bucket/backups/20251027T143000/ ./backup --recursive
+#   cd backup && sha256sum -c backup.sha256
+#
+# Future features (not yet implemented):
 # encryption =
 # incremental = false
