@@ -74,6 +74,9 @@ compression = gzip                              # Compression method: gzip, bzip
 # - Disk Space Check -
 
 #min_disk_space_gb = 5                          # Minimum free disk space required (GB)
+                                                # If not set, automatically calculated from data directory size
+#disk_space_margin_gb = 2                       # Safety margin added to data directory size (default: 2GB)
+                                                # Only used when min_disk_space_gb is not set
 
 # - Retention Policy -
 # Automatically cleanup old backups from S3

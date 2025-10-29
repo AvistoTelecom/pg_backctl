@@ -172,7 +172,8 @@ service=""
 compose_filepath=""
 pg_backctl_image="pg_backctl:latest"
 config_file=""
-min_disk_space_gb="5"
+min_disk_space_gb=""
+disk_space_margin_gb="2"  # Safety margin to add to volume size when calculating required space
 s3_backup_prefix="backups"  # Default prefix for S3 backups (e.g., "backups" -> s3://bucket/backups/LABEL/)
 retention_count=""  # Keep last N backups (takes priority over retention_days)
 retention_days=""   # Keep backups for N days
@@ -240,6 +241,7 @@ parse_config_file() {
             label) backup_label="$value" ;;
             compression) compression="$value" ;;
             min_disk_space_gb) min_disk_space_gb="$value" ;;
+            disk_space_margin_gb) disk_space_margin_gb="$value" ;;
             retention_count) retention_count="$value" ;;
             retention_days) retention_days="$value" ;;
           esac
@@ -347,6 +349,33 @@ check_aws() {
   fi
 }
 
+# Function to get PostgreSQL data directory size in GB
+get_postgres_volume_size_gb() {
+  # Get the size of PostgreSQL data directory from inside the database container
+  local volume_size_bytes
+  volume_size_bytes=$(docker compose -f "$compose_filepath" exec -T "$service" \
+    du -sb /var/lib/postgresql/data 2>/dev/null | awk '{print $1}') || {
+    echo "0" >&2
+    return 1
+  }
+
+  # Strip whitespace from result
+  volume_size_bytes=$(echo "$volume_size_bytes" | tr -d '[:space:]')
+
+  # Validate result is a number
+  if ! [[ "$volume_size_bytes" =~ ^[0-9]+$ ]]; then
+    echo "0" >&2
+    return 1
+  fi
+
+  # Convert bytes to GB (round up)
+  local volume_size_gb
+  volume_size_gb=$(awk "BEGIN {printf \"%.0f\", ($volume_size_bytes + 1073741823) / 1073741824}")
+
+  # Only output the number to stdout
+  echo "$volume_size_gb"
+}
+
 # Function to check disk space
 check_disk_space() {
   local target_dir="$1"
@@ -386,14 +415,34 @@ check_args() {
     check_aws
   fi
 
+  # Determine required disk space
+  local required_space_gb="$min_disk_space_gb"
+
+  # If min_disk_space_gb is not set, calculate from volume size
+  if [ -z "$required_space_gb" ]; then
+    log "Querying PostgreSQL data directory size..."
+    local volume_size_gb
+    volume_size_gb=$(get_postgres_volume_size_gb)
+
+    if [ "$volume_size_gb" -gt 0 ] 2>/dev/null; then
+      required_space_gb=$((volume_size_gb + disk_space_margin_gb))
+      log "PostgreSQL data directory size: ${volume_size_gb}GB"
+      log "Calculated required disk space: ${volume_size_gb}GB (data directory) + ${disk_space_margin_gb}GB (margin) = ${required_space_gb}GB"
+    else
+      # Fallback to default if volume size query failed
+      required_space_gb="5"
+      log "WARNING: Failed to get data directory size, using default minimum disk space: ${required_space_gb}GB"
+    fi
+  fi
+
   # If local, ensure directory exists or can be created
   if [ -n "${backup_path:-}" ]; then
     mkdir -p "$backup_path" || die "Cannot create backup directory: $backup_path" $ERR_USAGE
     # Check disk space for local backups
-    check_disk_space "$backup_path" "$min_disk_space_gb"
+    check_disk_space "$backup_path" "$required_space_gb"
   else
     # For S3 mode, check /tmp disk space
-    check_disk_space "/tmp" "$min_disk_space_gb"
+    check_disk_space "/tmp" "$required_space_gb"
   fi
 }
 
