@@ -453,25 +453,45 @@ create_backup_from_db() {
 
   # Create temporary directory inside the db container
   log "Creating temporary directory in container"
-  docker compose -f "$compose_filepath" exec -T "$service" mkdir -p /tmp/backup
+  if ! docker compose -f "$compose_filepath" exec -T "$service" mkdir -p /tmp/backup; then
+    die "Failed to create temporary directory in container" $ERR_BACKUP_FAILED
+  fi
 
   # Run pg_basebackup inside the database container
   log "Running pg_basebackup..."
   if [ -n "${PGPASSWORD:-}" ]; then
     docker compose -f "$compose_filepath" exec -T "$service" \
       bash -c "PGPASSWORD='$PGPASSWORD' pg_basebackup -h $host -p $db_port -U $db_user -D /tmp/backup -Ft $compression_flag -P -v"
+    local backup_exit_code=$?
   else
     docker compose -f "$compose_filepath" exec -T "$service" \
       pg_basebackup -h "$host" -p "$db_port" -U "$db_user" -D /tmp/backup -Ft $compression_flag -P -v
+    local backup_exit_code=$?
   fi
+
+  # Check if pg_basebackup failed
+  if [ $backup_exit_code -ne 0 ]; then
+    log "ERROR: pg_basebackup failed with exit code $backup_exit_code"
+    log "Cleaning up failed backup attempt..."
+    docker compose -f "$compose_filepath" exec -T "$service" rm -rf /tmp/backup 2>/dev/null || true
+    die "Database backup failed - check database connection and credentials" $ERR_BACKUP_FAILED
+  fi
+
+  log "pg_basebackup completed successfully"
 
   # Copy backup files from container to host
   log "Copying backup files from container to host..."
-  docker compose -f "$compose_filepath" cp "$service":/tmp/backup/. "$backup_dir/"
+  if ! docker compose -f "$compose_filepath" cp "$service":/tmp/backup/. "$backup_dir/"; then
+    log "ERROR: Failed to copy backup files from container"
+    docker compose -f "$compose_filepath" exec -T "$service" rm -rf /tmp/backup 2>/dev/null || true
+    die "Failed to copy backup files from container to host" $ERR_BACKUP_FAILED
+  fi
 
   # Cleanup temporary directory in container
   log "Cleaning up container temporary directory"
-  docker compose -f "$compose_filepath" exec -T "$service" rm -rf /tmp/backup
+  if ! docker compose -f "$compose_filepath" exec -T "$service" rm -rf /tmp/backup; then
+    log "WARNING: Failed to cleanup temporary directory in container"
+  fi
 
   log "Backup files copied to $backup_dir"
   ls -lh "$backup_dir" | tee -a "$LOG_FILE"
