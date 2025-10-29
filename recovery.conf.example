@@ -125,5 +125,5 @@ compose_file = docker-compose.yml              # Path to docker-compose file
 #------------------------------------------------------------------------------
 
 [docker]
-
-image = pg_backctl:latest                       # pg_backctl Docker image for S3 operations
+# pg_backctl Docker image for S3 operations
+image = ghcr.io/avistotelecom/pg_backctl:latest
