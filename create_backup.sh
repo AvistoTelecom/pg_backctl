@@ -211,6 +211,9 @@ parse_config_file() {
       key=$(echo "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
       value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
+      # Remove inline comments (everything from # to end of line)
+      value=$(echo "$value" | sed 's/[[:space:]]*#.*$//')
+
       # Remove quotes if present
       value=$(echo "$value" | sed 's/^["'\'']\(.*\)["'\'']$/\1/')
 
