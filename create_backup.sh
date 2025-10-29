@@ -2,14 +2,16 @@
 
 set -euo pipefail
 
-# Error codes
-ERR_MISSING_CMD=10      # Required command not found
-ERR_MISSING_ENV=11      # Missing required environment variable
-ERR_MISSING_ARG=12      # Missing required argument
-ERR_USAGE=14            # Usage error (bad arg combination)
-ERR_BACKUP_FAILED=15    # Backup operation failed
-ERR_DISK_SPACE=16       # Insufficient disk space
-ERR_UNKNOWN=99          # Unknown error
+# Get script directory and source shared libraries
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &>/dev/null && pwd )"
+source "$SCRIPT_DIR/lib/error_codes.sh"
+source "$SCRIPT_DIR/lib/logging.sh"
+source "$SCRIPT_DIR/lib/config_parser.sh"
+source "$SCRIPT_DIR/lib/aws_utils.sh"
+source "$SCRIPT_DIR/lib/docker_utils.sh"
+
+# Set up logging context
+SCRIPT_NAME="create_backup"
 
 # Global variables for cleanup
 TEMP_BACKUP_DIR=""
@@ -18,105 +20,6 @@ NGINX_LOG_FILE=""
 BACKUP_START_TIME=""
 BACKUP_LABEL=""
 
-# Escape JSON strings
-json_escape() {
-  local string="$1"
-  # Escape backslashes, quotes, and newlines
-  echo "$string" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\n/\\n/g'
-}
-
-# Logging function for New Relic (nginx format)
-log_json() {
-  local level="$1"
-  local message="$2"
-  local event_type="${3:-log}"
-  shift 3
-
-  if [ -z "$NGINX_LOG_FILE" ]; then
-    return
-  fi
-
-  local timestamp_nginx=$(date '+%d/%b/%Y:%H:%M:%S %z')
-
-  # Parse additional fields into associative array
-  local -A fields
-  fields["status"]="success"
-  fields["backup_label"]="-"
-  fields["destination"]="-"
-  fields["compression"]="-"
-  fields["backup_size_bytes"]="0"
-  fields["duration_seconds"]="0"
-
-  # Parse key=value pairs
-  while [ $# -gt 0 ]; do
-    local key="${1%%=*}"
-    local value="${1#*=}"
-    fields["$key"]="$value"
-    shift
-  done
-
-  # Determine HTTP-style status code
-  local status_code
-  case "$level" in
-    ERROR) status_code="500" ;;
-    WARN)  status_code="400" ;;
-    *)     status_code="200" ;;
-  esac
-
-  if [ "${fields[status]}" = "failed" ]; then
-    status_code="500"
-  fi
-
-  # nginx combined log format:
-  # $remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent"
-  #
-  # Adapted for pg_backctl:
-  # $hostname - $service [$timestamp] "$event_type backup_label method" $status_code $bytes "$destination" "$user_agent"
-
-  local request="$event_type ${fields[backup_label]} HTTP/1.1"
-  local user_agent="pg_backctl/1.3.0 compression=${fields[compression]} duration=${fields[duration_seconds]}s"
-
-  local nginx_log="$(hostname) - pg_backctl [$timestamp_nginx] \"$request\" $status_code ${fields[backup_size_bytes]} \"${fields[destination]}\" \"$user_agent\""
-
-  echo "$nginx_log" >> "$NGINX_LOG_FILE"
-}
-
-# Print error and exit with code
-die() {
-  local msg="$1"
-  local code="${2:-$ERR_UNKNOWN}"
-  log "ERROR: $msg"
-  log_json "ERROR" "$msg" "backup_error" "error_code=$code"
-  echo "Error $code: $msg" >&2
-  exit "$code"
-}
-
-# Logging function
-log() {
-  local msg="$1"
-  local timestamp
-  timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-  if [ -n "$LOG_FILE" ]; then
-    echo "[$timestamp] $msg" >> "$LOG_FILE"
-  fi
-  # Also echo to stdout for non-error messages
-  if [[ ! "$msg" =~ ^ERROR: ]]; then
-    echo "$msg"
-  fi
-
-  # Determine log level
-  local level="INFO"
-  if [[ "$msg" =~ ^ERROR: ]]; then
-    level="ERROR"
-  elif [[ "$msg" =~ ^WARNING: ]]; then
-    level="WARN"
-  fi
-
-  # Log to JSON (strip level prefix from message if present)
-  local clean_msg="${msg#ERROR: }"
-  clean_msg="${clean_msg#WARNING: }"
-  log_json "$level" "$clean_msg" "backup_log"
-}
 
 # Cleanup function for trap
 cleanup_on_error() {
@@ -178,106 +81,65 @@ s3_backup_prefix="backups"  # Default prefix for S3 backups (e.g., "backups" -> 
 retention_count=""  # Keep last N backups (takes priority over retention_days)
 retention_days=""   # Keep backups for N days
 
-# Function to parse INI-style config file
-parse_config_file() {
-  local config_path="$1"
+# Custom config handler for create_backup specific options
+config_handler() {
+  local section="$1"
+  local key="$2"
+  local value="$3"
 
-  if [ ! -f "$config_path" ]; then
-    die "Config file not found: $config_path" $ERR_USAGE
-  fi
-
-  log "Loading configuration from: $config_path"
-
-  local current_section=""
-
-  while IFS= read -r line || [ -n "$line" ]; do
-    # Remove leading/trailing whitespace
-    line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-
-    # Skip empty lines and comments
-    [[ -z "$line" || "$line" =~ ^# ]] && continue
-
-    # Check for section header
-    if [[ "$line" =~ ^\[(.+)\]$ ]]; then
-      current_section="${BASH_REMATCH[1]}"
-      continue
-    fi
-
-    # Parse key=value pairs
-    if [[ "$line" =~ ^([^=]+)=(.*)$ ]]; then
-      local key="${BASH_REMATCH[1]}"
-      local value="${BASH_REMATCH[2]}"
-
-      # Trim whitespace from key and value
-      key=$(echo "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-      value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-
-      # Remove inline comments (everything from # to end of line)
-      value=$(echo "$value" | sed 's/[[:space:]]*#.*$//')
-
-      # Remove quotes if present
-      value=$(echo "$value" | sed 's/^["'\'']\(.*\)["'\'']$/\1/')
-
-      # Map config file keys to script variables
-      case "$current_section" in
-        database)
-          case "$key" in
-            service) service="$value" ;;
-            compose_file) compose_filepath="$value" ;;
-            host) db_host="$value" ;;
-            port) db_port="$value" ;;
-            user) db_user="$value" ;;
-            name) db_name="$value" ;;
-            version) pgversion="$value" ;;
-          esac
-          ;;
-        destination)
-          case "$key" in
-            path) backup_path="$value" ;;
-            s3_url) s3_url="$value" ;;
-            s3_endpoint) s3_endpoint="$value" ;;
-            s3_prefix) s3_backup_prefix="$value" ;;
-          esac
-          ;;
-        backup)
-          case "$key" in
-            label) backup_label="$value" ;;
-            compression) compression="$value" ;;
-            min_disk_space_gb) min_disk_space_gb="$value" ;;
-            disk_space_margin_gb) disk_space_margin_gb="$value" ;;
-            retention_count) retention_count="$value" ;;
-            retention_days) retention_days="$value" ;;
-          esac
-          ;;
-        aws)
-          case "$key" in
-            access_key) AWS_ACCESS_KEY="$value" ;;
-            secret_key) AWS_SECRET_KEY="$value" ;;
-            region) AWS_REGION="$value" ;;
-          esac
-          ;;
-        docker)
-          case "$key" in
-            image) pg_backctl_image="$value" ;;
-          esac
-          ;;
-        advanced)
-          case "$key" in
-            encryption) encryption="$value" ;;
-            incremental) incremental="$value" ;;
-          esac
-          ;;
+  case "$section" in
+    database)
+      case "$key" in
+        service) service="$value" ;;
+        compose_file) compose_filepath="$value" ;;
+        host) db_host="$value" ;;
+        port) db_port="$value" ;;
+        user) db_user="$value" ;;
+        name) db_name="$value" ;;
+        version) pgversion="$value" ;;
       esac
-    fi
-  done < "$config_path"
+      ;;
+    destination)
+      case "$key" in
+        path) backup_path="$value" ;;
+        s3_url) s3_url="$value" ;;
+        s3_endpoint) s3_endpoint="$value" ;;
+        s3_prefix) s3_backup_prefix="$value" ;;
+      esac
+      ;;
+    backup)
+      case "$key" in
+        label) backup_label="$value" ;;
+        compression) compression="$value" ;;
+        min_disk_space_gb) min_disk_space_gb="$value" ;;
+        disk_space_margin_gb) disk_space_margin_gb="$value" ;;
+        retention_count) retention_count="$value" ;;
+        retention_days) retention_days="$value" ;;
+      esac
+      ;;
+    aws)
+      case "$key" in
+        access_key) AWS_ACCESS_KEY="$value" ;;
+        secret_key) AWS_SECRET_KEY="$value" ;;
+        region) AWS_REGION="$value" ;;
+      esac
+      ;;
+    docker)
+      case "$key" in
+        image) pg_backctl_image="$value" ;;
+      esac
+      ;;
+    advanced)
+      case "$key" in
+        encryption) encryption="$value" ;;
+        incremental) incremental="$value" ;;
+      esac
+      ;;
+  esac
 }
 
-# Check for required external commands
-for cmd in docker sed grep date; do
-  if ! command -v "$cmd" >/dev/null 2>&1; then
-    die "Required command '$cmd' not found in PATH. Please install it before running this script." $ERR_MISSING_CMD
-  fi
-done
+# Check for required commands
+check_required_commands docker sed grep date aws
 
 # Print usage/help
 usage() {
@@ -485,12 +347,6 @@ get_db_host_from_compose() {
   fi
 }
 
-# Function recreate compose network name
-get_compose_network() {
-  local folder_name
-  folder_name=$(basename "$(dirname "$compose_filepath")")
-  echo "${folder_name}_default"
-}
 
 # Function to create backup using database container
 create_backup_from_db() {
@@ -505,19 +361,17 @@ create_backup_from_db() {
 
   # Create temporary directory inside the db container
   log "Creating temporary directory in container"
-  if ! docker compose -f "$compose_filepath" exec -T "$service" mkdir -p /tmp/backup; then
+  if ! compose_exec mkdir -p /tmp/backup; then
     die "Failed to create temporary directory in container" $ERR_BACKUP_FAILED
   fi
 
   # Run pg_basebackup inside the database container
   log "Running pg_basebackup..."
   if [ -n "${PGPASSWORD:-}" ]; then
-    docker compose -f "$compose_filepath" exec -T "$service" \
-      bash -c "PGPASSWORD='$PGPASSWORD' pg_basebackup -h $host -p $db_port -U $db_user -D /tmp/backup -Ft $compression_flag -P -v"
+    compose_exec bash -c "PGPASSWORD='$PGPASSWORD' pg_basebackup -h $host -p $db_port -U $db_user -D /tmp/backup -Ft $compression_flag -P -v"
     local backup_exit_code=$?
   else
-    docker compose -f "$compose_filepath" exec -T "$service" \
-      pg_basebackup -h "$host" -p "$db_port" -U "$db_user" -D /tmp/backup -Ft $compression_flag -P -v
+    compose_exec pg_basebackup -h "$host" -p "$db_port" -U "$db_user" -D /tmp/backup -Ft $compression_flag -P -v
     local backup_exit_code=$?
   fi
 
@@ -525,7 +379,7 @@ create_backup_from_db() {
   if [ $backup_exit_code -ne 0 ]; then
     log "ERROR: pg_basebackup failed with exit code $backup_exit_code"
     log "Cleaning up failed backup attempt..."
-    docker compose -f "$compose_filepath" exec -T "$service" rm -rf /tmp/backup 2>/dev/null || true
+    compose_exec rm -rf /tmp/backup 2>/dev/null || true
     die "Database backup failed - check database connection and credentials" $ERR_BACKUP_FAILED
   fi
 
@@ -533,15 +387,15 @@ create_backup_from_db() {
 
   # Copy backup files from container to host
   log "Copying backup files from container to host..."
-  if ! docker compose -f "$compose_filepath" cp "$service":/tmp/backup/. "$backup_dir/"; then
+  if ! compose_cp "$service":/tmp/backup/. "$backup_dir/"; then
     log "ERROR: Failed to copy backup files from container"
-    docker compose -f "$compose_filepath" exec -T "$service" rm -rf /tmp/backup 2>/dev/null || true
+    compose_exec rm -rf /tmp/backup 2>/dev/null || true
     die "Failed to copy backup files from container to host" $ERR_BACKUP_FAILED
   fi
 
   # Cleanup temporary directory in container
   log "Cleaning up container temporary directory"
-  if ! docker compose -f "$compose_filepath" exec -T "$service" rm -rf /tmp/backup; then
+  if ! compose_exec rm -rf /tmp/backup; then
     log "WARNING: Failed to cleanup temporary directory in container"
   fi
 
@@ -961,7 +815,7 @@ fi
 
 # Load config file if specified (medium priority - overrides .env)
 if [ -n "$config_file" ]; then
-  parse_config_file "$config_file"
+  parse_config_file "$config_file" config_handler
   echo "Configuration loaded from: $config_file"
 fi
 

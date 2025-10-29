@@ -2,13 +2,17 @@
 
 set -euo pipefail
 
+# Get script directory and source shared libraries
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &>/dev/null && pwd )"
+source "$SCRIPT_DIR/lib/error_codes.sh"
+source "$SCRIPT_DIR/lib/logging.sh"
+source "$SCRIPT_DIR/lib/docker_utils.sh"
+
+# Set up logging context
+SCRIPT_NAME="pg_backctl"
+
 # Check for required commands
-for cmd in pg_basebackup tar grep; do
-  if ! command -v "$cmd" >/dev/null 2>&1; then
-    echo "Error: Required command '$cmd' not found in PATH. Please install it before running this script." >&2
-    exit 10
-  fi
-done
+check_required_commands pg_basebackup tar grep
 
 # Function to perform pg_basebackup
 create_backup() {
@@ -17,13 +21,13 @@ create_backup() {
   local user="${DB_USER:-postgres}"
   local compression_flag="${COMPRESSION_FLAG:-}"
 
-  echo "[pg_backctl] Starting pg_basebackup from $host:$port as user $user"
-  echo "[pg_backctl] Output directory: /backup"
+  log_simple "Starting pg_basebackup from $host:$port as user $user"
+  log_simple "Output directory: /backup"
 
   # Run pg_basebackup
   pg_basebackup -h "$host" -p "$port" -U "$user" -D /backup -Ft $compression_flag -P -v
 
-  echo "[pg_backctl] Backup completed"
+  log_simple "Backup completed"
   ls -lh /backup
 }
 
@@ -33,7 +37,7 @@ upload_to_s3() {
   bucket="${bucket%/}"
   local label="${BACKUP_LABEL}"
 
-  echo "[pg_backctl] Uploading backup to S3: s3://$bucket/$label/"
+  log_simple "Uploading backup to S3: s3://$bucket/$label/"
 
   # Configure AWS CLI
   aws configure set aws_access_key_id "$AWS_ACCESS_KEY_ID"
@@ -43,11 +47,11 @@ upload_to_s3() {
   # Upload files to S3
   aws s3 cp /backup/ "s3://$bucket/$label/" --recursive --endpoint-url "$S3_ENDPOINT"
 
-  echo "[pg_backctl] Upload completed to s3://$bucket/$label/"
+  log_simple "Upload completed to s3://$bucket/$label/"
 }
 
 # Main logic
-echo "[pg_backctl] Backup mode"
+log_simple "Backup mode"
 
 # Perform backup
 create_backup
@@ -56,12 +60,11 @@ create_backup
 if [[ -n "${S3_BACKUP_URL:-}" ]]; then
   # Check if aws command is available
   if ! command -v aws >/dev/null 2>&1; then
-    echo "[pg_backctl] AWS CLI not found, cannot upload to S3" >&2
-    exit 10
+    die "AWS CLI not found, cannot upload to S3" $ERR_MISSING_CMD
   fi
   upload_to_s3
 else
-  echo "[pg_backctl] Local backup mode - files saved to /backup"
+  log_simple "Local backup mode - files saved to /backup"
 fi
 
-echo "[pg_backctl] Backup operation completed successfully"
+log_simple "Backup operation completed successfully"

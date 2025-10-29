@@ -2,23 +2,19 @@
 
 set -euo pipefail
 
-# Error codes
-ERR_MISSING_CONF=3      # -c used but postgresql.auto.conf missing
-ERR_UNSAFE_VOLUME=4     # Unsafe volume operation
-ERR_MISSING_CMD=10      # Required command not found
-ERR_MISSING_ENV=11      # Missing required environment variable
-ERR_MISSING_ARG=12      # Missing required argument
-ERR_LOCAL_BACKUP=13     # Local backup files missing
-ERR_USAGE=14            # Usage error (bad arg combination)
-ERR_UNKNOWN=99          # Unknown error
+# Get script directory and source shared libraries
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &>/dev/null && pwd )"
+source "$SCRIPT_DIR/lib/error_codes.sh"
+source "$SCRIPT_DIR/lib/logging.sh"
+source "$SCRIPT_DIR/lib/config_parser.sh"
+source "$SCRIPT_DIR/lib/aws_utils.sh"
+source "$SCRIPT_DIR/lib/docker_utils.sh"
 
-# Print error and exit with code 
-die() {
-  local msg="$1"
-  local code="${2:-$ERR_UNKNOWN}"
-  echo "Error $code: $msg" >&2
-  exit "$code"
-}
+# Set up logging context
+SCRIPT_NAME="import_db_backup"
+
+# Additional error codes specific to this script
+ERR_LOCAL_BACKUP=13     # Local backup files missing
 
 # variables default values
 override_volume=false
@@ -34,99 +30,61 @@ config_file=""
 s3_backup_path=""  # Full S3 path to backup (e.g., "backups/20250124T143000" or "postgresql-cluster/base/backup-name")
 s3_search_prefix="postgresql-cluster/base/"  # Default search prefix for auto-detect (backward compatible)
 
-# Function to parse INI-style config file
-parse_config_file() {
-  local config_path="$1"
+# Custom config handler for import_db_backup specific options
+config_handler() {
+  local section="$1"
+  local key="$2"
+  local value="$3"
 
-  if [ ! -f "$config_path" ]; then
-    die "Config file not found: $config_path" $ERR_USAGE
-  fi
-
-  echo "Loading configuration from: $config_path"
-
-  local current_section=""
-
-  while IFS= read -r line || [ -n "$line" ]; do
-    # Remove leading/trailing whitespace
-    line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-
-    # Skip empty lines and comments
-    [[ -z "$line" || "$line" =~ ^# ]] && continue
-
-    # Check for section header
-    if [[ "$line" =~ ^\[(.+)\]$ ]]; then
-      current_section="${BASH_REMATCH[1]}"
-      continue
-    fi
-
-    # Parse key=value pairs
-    if [[ "$line" =~ ^([^=]+)=(.*)$ ]]; then
-      local key="${BASH_REMATCH[1]}"
-      local value="${BASH_REMATCH[2]}"
-
-      # Trim whitespace from key and value
-      key=$(echo "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-      value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-
-      # Remove quotes if present
-      value=$(echo "$value" | sed 's/^["'\'']\(.*\)["'\'']$/\1/')
-
-      # Map config file keys to script variables
-      case "$current_section" in
-        source)
-          case "$key" in
-            s3_url) s3_url="$value" ;;
-            s3_endpoint) s3_endpoint="$value" ;;
-            s3_backup_path) s3_backup_path="$value" ;;
-            s3_search_prefix) s3_search_prefix="$value" ;;
-            path) backup_path="$value" ;;
-          esac
-          ;;
-        target)
-          case "$key" in
-            volume_name) volume_name="$value" ;;
-            service) service="$value" ;;
-            compose_file) compose_filepath="$value" ;;
-          esac
-          ;;
-        restore)
-          case "$key" in
-            standby) [[ "$value" =~ ^(true|yes|1)$ ]] && standby=true ;;
-            override_volume) [[ "$value" =~ ^(true|yes|1)$ ]] && override_volume=true ;;
-            new_volume_name) new_volume_name="$value" ;;
-          esac
-          ;;
-        postgres)
-          case "$key" in
-            version) pgversion="$value" ;;
-            replace_conf) replace_conf="$value" ;;
-            replace_pg_hba_conf) replace_pg_hba_conf="$value" ;;
-            post_init_conf) post_init_conf="$value" ;;
-          esac
-          ;;
-        aws)
-          case "$key" in
-            access_key) AWS_ACCESS_KEY="$value" ;;
-            secret_key) AWS_SECRET_KEY="$value" ;;
-            region) AWS_REGION="$value" ;;
-          esac
-          ;;
-        docker)
-          case "$key" in
-            image) pg_backctl_image="$value" ;;
-          esac
-          ;;
+  case "$section" in
+    source)
+      case "$key" in
+        s3_url) s3_url="$value" ;;
+        s3_endpoint) s3_endpoint="$value" ;;
+        s3_backup_path) s3_backup_path="$value" ;;
+        s3_search_prefix) s3_search_prefix="$value" ;;
+        path) backup_path="$value" ;;
       esac
-    fi
-  done < "$config_path"
+      ;;
+    target)
+      case "$key" in
+        volume_name) volume_name="$value" ;;
+        service) service="$value" ;;
+        compose_file) compose_filepath="$value" ;;
+      esac
+      ;;
+    restore)
+      case "$key" in
+        standby) [[ "$value" =~ ^(true|yes|1)$ ]] && standby=true ;;
+        override_volume) [[ "$value" =~ ^(true|yes|1)$ ]] && override_volume=true ;;
+        new_volume_name) new_volume_name="$value" ;;
+      esac
+      ;;
+    postgres)
+      case "$key" in
+        version) pgversion="$value" ;;
+        replace_conf) replace_conf="$value" ;;
+        replace_pg_hba_conf) replace_pg_hba_conf="$value" ;;
+        post_init_conf) post_init_conf="$value" ;;
+      esac
+      ;;
+    aws)
+      case "$key" in
+        access_key) AWS_ACCESS_KEY="$value" ;;
+        secret_key) AWS_SECRET_KEY="$value" ;;
+        region) AWS_REGION="$value" ;;
+      esac
+      ;;
+    docker)
+      case "$key" in
+        image) pg_backctl_image="$value" ;;
+      esac
+      ;;
+  esac
 }
 
-# Check for required external commands
-for cmd in docker sed grep; do
-  if ! command -v "$cmd" >/dev/null 2>&1; then
-    die "Required command '$cmd' not found in PATH. Please install it before running this script." $ERR_MISSING_CMD
-  fi
-done
+# Check for required commands
+check_required_commands docker sed grep aws
 
 # Print usage/help
 usage() {
@@ -194,10 +152,13 @@ Config File:
 EOF
 }
 
-# Function check AWS
+# Function check AWS (wrapper around library function with custom variables)
 check_aws() {
-  if [ -z "${AWS_ACCESS_KEY:-}" ] || [ -z "${AWS_SECRET_KEY:-}" ] || [ -z "${AWS_REGION:-}" ] || [ -z "${s3_url:-}" ] || [ -z "${s3_endpoint:-}" ]; then
-    die "Missing info in .env. Ensure you have set AWS_ACCESS_KEY, AWS_SECRET_KEY and AWS_REGION." $ERR_MISSING_ENV
+  if [ -z "${AWS_ACCESS_KEY:-}" ] || [ -z "${AWS_SECRET_KEY:-}" ] || [ -z "${AWS_REGION:-}" ]; then
+    die "Missing AWS credentials. Ensure you have set AWS_ACCESS_KEY, AWS_SECRET_KEY and AWS_REGION." $ERR_MISSING_ENV
+  fi
+  if [ -z "${s3_url:-}" ] || [ -z "${s3_endpoint:-}" ]; then
+    die "Missing S3 configuration. Both s3_url and s3_endpoint are required for S3 operations." $ERR_MISSING_ARG
   fi
 }
 # Function arguments
@@ -229,12 +190,12 @@ check_backup() {
 up_db() {
   local sleep_time="10"
   # Up container
-  docker compose -f "$compose_filepath" up -d "$service"
+  compose_up
 
   if [ -n "$replace_init_conf" ]; then
     replace_init_configuration
   fi
-  
+
   echo "Sleeping for $sleep_time seconds to allow the database to start..."
   sleep "$sleep_time"
 }
@@ -278,8 +239,8 @@ run_local() {
 
 replace_init_configuration() {
   if [ -n "$replace_init_conf" ]; then
-    docker compose -f "$compose_filepath" cp "$replace_init_conf" "$service":/var/lib/postgresql/data/postgresql.auto.conf
-    docker compose -f "$compose_filepath" restart "$service"
+    compose_cp "$replace_init_conf" "$service":/var/lib/postgresql/data/postgresql.auto.conf
+    compose_restart
   fi
 }
 
@@ -287,8 +248,8 @@ replace_init_configuration() {
 replace_configuration() {
   if [ -n "$replace_conf" ]; then
     echo "> Replacing postgresql.auto.conf with custom configuration..."
-    docker compose -f "$compose_filepath" cp "$replace_conf" "$service":/var/lib/postgresql/data/postgresql.auto.conf
-    docker compose -f "$compose_filepath" restart "$service"
+    compose_cp "$replace_conf" "$service":/var/lib/postgresql/data/postgresql.auto.conf
+    compose_restart
     echo "  ✓ Configuration replaced and service restarted"
   else
     echo "> Skipping postgresql.auto.conf replacement (not configured)"
@@ -301,7 +262,7 @@ post_init_script() {
     echo "Copying and running post-init SQL scripts from $post_init_conf..."
 
     # Copy the folder into the container
-    docker compose -f "$compose_filepath" cp "$post_init_conf" "$service":/tmp/init-scripts/
+    compose_cp "$post_init_conf" "$service":/tmp/init-scripts/
 
     # Get DB/user/password from env or set defaults
     local db="${POST_INIT_SCRIPT_DATABASE:-postgres}"
@@ -323,9 +284,9 @@ post_init_script() {
       echo "Executing script: $filename"
       # Use docker compose exec to run psql inside the container
       if [ -n "$pass" ]; then
-        docker compose -f "$compose_filepath" exec -T "$service" bash -c "PGPASSWORD='$pass' psql -U '$user' -d '$db' -f '/tmp/init-scripts/$filename'"
+        compose_exec bash -c "PGPASSWORD='$pass' psql -U '$user' -d '$db' -f '/tmp/init-scripts/$filename'"
       else
-        docker compose -f "$compose_filepath" exec -T "$service" psql -U "$user" -d "$db" -f "/tmp/init-scripts/$filename"
+        compose_exec psql -U "$user" -d "$db" -f "/tmp/init-scripts/$filename"
       fi
     done
   else
@@ -337,24 +298,14 @@ post_init_script() {
 replace_pg_hba() {
   if [ -n "$replace_pg_hba_conf" ]; then
     echo "> Replacing pg_hba.conf with custom configuration..."
-    docker compose -f "$compose_filepath" cp "$replace_pg_hba_conf" "$service":/var/lib/postgresql/data/pg_hba.conf
-    docker compose -f "$compose_filepath" restart "$service"
+    compose_cp "$replace_pg_hba_conf" "$service":/var/lib/postgresql/data/pg_hba.conf
+    compose_restart
     echo "  ✓ pg_hba.conf replaced and service restarted"
   else
     echo "> Skipping pg_hba.conf replacement (not configured)"
   fi
 }
 
-# Function recreate compose volume name
-get_full_volume_name() {
-  local folder_name
-  folder_name=$(basename "$(dirname "$compose_filepath")")
-  local new_compose_vol_name="${folder_name}_$1"
-  echo "$new_compose_vol_name"
-}
-
-# Get script directory
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &>/dev/null && pwd )"
 
 # Parse command line arguments (first pass - check for config file)
 while [[ $# -gt 0 ]]; do
@@ -385,7 +336,7 @@ fi
 
 # Load config file if specified (medium priority - overrides .env)
 if [ -n "$config_file" ]; then
-  parse_config_file "$config_file"
+  parse_config_file "$config_file" config_handler
   echo "Configuration loaded from: $config_file"
 fi
 
@@ -483,7 +434,7 @@ case $mode in
     # Check if service is running ? => if not warn
 
     # Down container
-    docker compose -f "$compose_filepath" down "$service"
+    compose_down
 
     echo "get docker compose volume name of $volume_name"
     vol_name=$(get_full_volume_name "$volume_name")
@@ -539,12 +490,12 @@ case $mode in
   3)
     # Run recovery on new volume mode
     # Down container
-    docker compose -f "$compose_filepath" down "$service"
+    compose_down
     echo "Creating new volume: $new_volume_name"
     echo "Updating compose file"
     sed -i.bak "s/$volume_name/$new_volume_name/g" "$compose_filepath"
-    docker compose -f "$compose_filepath" up -d "$service"
-    docker compose -f "$compose_filepath" down "$service"
+    compose_up
+    compose_down
     new_compose_vol_name=$(get_full_volume_name "$new_volume_name")
     # pg_backctl handles the restoration of the backup
     # run in local or aws mode
