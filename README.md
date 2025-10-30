@@ -503,3 +503,9 @@ Include:
 ## License
 
 PostgreSQL License - See [LICENSE](LICENSE) file for details
+
+---
+
+**Made with ❤️ by the Avisto Telecom team**
+
+For issues and feature requests, please visit: https://github.com/AvistoTelecom/pg_backctl/issues
