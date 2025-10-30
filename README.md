@@ -503,33 +503,3 @@ Include:
 ## License
 
 PostgreSQL License - See [LICENSE](LICENSE) file for details
-
-## Roadmap
-
-### Completed ✅
-- [x] Physical backups with pg_basebackup
-- [x] S3 storage integration
-- [x] Config file system
-- [x] Retention policies
-- [x] SHA256 checksums
-- [x] Disk space checks
-- [x] JSON logging for observability
-
-### In Progress 🚧
-- [ ] Backup encryption (GPG/AWS KMS)
-- [ ] Automated restore testing
-- [ ] Backup locking (prevent concurrent backups)
-
-### Planned 📋
-- [ ] Incremental backups
-- [ ] Point-in-time recovery (PITR) with WAL archiving
-- [ ] Multi-database selection (pg_dump mode)
-- [ ] Email/webhook notifications
-- [ ] Web UI for backup management
-- [ ] Support for non-Docker installations
-
----
-
-**Made with ❤️ by the Avisto Telecom team**
-
-For issues and feature requests, please visit: https://github.com/AvistoTelecom/pg_backctl/issues
