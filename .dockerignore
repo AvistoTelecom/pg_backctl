@@ -1,4 +1,10 @@
 .github
+confs
 LICENSE
 README.md
 renovate.json5
+recovery.conf.example
+import_db_backup.sh
+backup.conf.example
+create_backup.sh
+.gitignore
