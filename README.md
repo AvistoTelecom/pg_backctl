@@ -479,9 +479,6 @@ myhost - pg_backctl [27/Oct/2024:16:52:10 +0000] "backup_completed 20251027T1430
 - `backup_uploaded` - Backup uploaded to S3
 - `retention_cleanup` - Old backups removed
 
-**New Relic Integration:**
-See [newrelic-logging-example.yml](newrelic-logging-example.yml) for configuration.
-
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
@@ -503,48 +500,9 @@ Include:
 - Error messages and logs
 - Steps to reproduce
 
-## Security
-
-### Audit Results
-
-See [AUDIT.md](AUDIT.md) for the security and reliability audit results.
-
-**Current Status:** ⚠️ Development tool - not production-ready without hardening
-
-**Recommended for production:**
-- ✅ Add encryption at rest
-- ✅ Use IAM roles instead of credentials
-- ✅ Implement backup testing automation
-- ✅ Add retention dry-run mode
-- ✅ Add recovery safety prompts
-
 ## License
 
 PostgreSQL License - See [LICENSE](LICENSE) file for details
-
-## Roadmap
-
-### Completed ✅
-- [x] Physical backups with pg_basebackup
-- [x] S3 storage integration
-- [x] Config file system
-- [x] Retention policies
-- [x] SHA256 checksums
-- [x] Disk space checks
-- [x] JSON logging for observability
-
-### In Progress 🚧
-- [ ] Backup encryption (GPG/AWS KMS)
-- [ ] Automated restore testing
-- [ ] Backup locking (prevent concurrent backups)
-
-### Planned 📋
-- [ ] Incremental backups
-- [ ] Point-in-time recovery (PITR) with WAL archiving
-- [ ] Multi-database selection (pg_dump mode)
-- [ ] Email/webhook notifications
-- [ ] Web UI for backup management
-- [ ] Support for non-Docker installations
 
 ---
 
