@@ -139,7 +139,7 @@ config_handler() {
 }
 
 # Check for required commands
-check_required_commands docker sed grep date aws
+check_required_commands docker sed grep date
 
 # Print usage/help
 usage() {
