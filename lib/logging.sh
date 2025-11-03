@@ -63,10 +63,26 @@ log_json() {
   # $remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent"
   #
   # Adapted for pg_backctl:
-  # $hostname - $service [$timestamp] "$event_type backup_label method" $status_code $bytes "$destination" "$user_agent"
+  # $hostname - $service [$timestamp] "$message" $status_code $bytes "$destination" "$user_agent"
+  #
+  # The "request" field contains: actual log message (clean, no prefix, truncated to 200 chars)
+  # The "referer" field contains: destination or additional metadata
+  # The "user_agent" field contains: event_type + version + all key=value pairs (for parsing/filtering)
 
-  local request="$event_type ${fields[backup_label]} HTTP/1.1"
-  local user_agent="pg_backctl/1.3.0 compression=${fields[compression]} duration=${fields[duration_seconds]}s"
+  # Truncate message to 200 chars for readability
+  local truncated_msg="${message:0:200}"
+  if [ ${#message} -gt 200 ]; then
+    truncated_msg="${truncated_msg}..."
+  fi
+
+  # Build request field: just the message (clean, human-readable)
+  local request="$truncated_msg"
+
+  # Build user_agent with event_type first, then all metadata fields
+  local user_agent="pg_backctl/1.3.0 event=$event_type"
+  for key in "${!fields[@]}"; do
+    user_agent="$user_agent ${key}=${fields[$key]}"
+  done
 
   local nginx_log="$(hostname) - pg_backctl [$timestamp_nginx] \"$request\" $status_code ${fields[backup_size_bytes]} \"${fields[destination]}\" \"$user_agent\""
 
@@ -74,10 +90,12 @@ log_json() {
 }
 
 # Standard logging function
-# Usage: log "message"
+# Usage: log "message" ["event_type"]
 # Supports prefixes: ERROR:, WARNING:
+# Optional event_type parameter for nginx-format logs (e.g., "disk_check", "backup_started")
 log() {
   local msg="$1"
+  local event_type="${2:-}"
   local timestamp
   timestamp=$(date '+%Y-%m-%d %H:%M:%S')
 
@@ -101,10 +119,13 @@ log() {
     level="WARN"
   fi
 
-  # Log to JSON (strip level prefix from message if present)
-  local clean_msg="${msg#ERROR: }"
-  clean_msg="${clean_msg#WARNING: }"
-  log_json "$level" "$clean_msg" "${SCRIPT_NAME:-pg_backctl}_log"
+  # Log to nginx format with appropriate event type
+  if [ -n "$event_type" ]; then
+    # Use provided event type
+    local clean_msg="${msg#ERROR: }"
+    clean_msg="${clean_msg#WARNING: }"
+    log_json "$level" "$clean_msg" "$event_type"
+  fi
 }
 
 # Simple logging function for entrypoint scripts

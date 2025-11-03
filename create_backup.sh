@@ -250,13 +250,13 @@ check_disk_space() {
   local available_gb
   available_gb=$(df -BG "$target_dir" | awk 'NR==2 {print $4}' | sed 's/G//')
 
-  log "Available disk space in $target_dir: ${available_gb}GB"
+  log "Available disk space in $target_dir: ${available_gb}GB" "disk_check"
 
   if [ "$available_gb" -lt "$min_free_gb" ]; then
     die "Insufficient disk space in $target_dir. Available: ${available_gb}GB, Required: at least ${min_free_gb}GB" $ERR_DISK_SPACE
   fi
 
-  log "Disk space check passed"
+  log "Disk space check passed" "disk_check"
 }
 
 # Function check arguments
@@ -285,18 +285,18 @@ check_args() {
 
   # If min_disk_space_gb is not set, calculate from volume size
   if [ -z "$required_space_gb" ]; then
-    log "Querying PostgreSQL data directory size..."
+    log "Querying PostgreSQL data directory size..." "prerequisites"
     local volume_size_gb
     volume_size_gb=$(get_postgres_volume_size_gb)
 
     if [ "$volume_size_gb" -gt 0 ] 2>/dev/null; then
       required_space_gb=$((volume_size_gb + disk_space_margin_gb))
-      log "PostgreSQL data directory size: ${volume_size_gb}GB"
-      log "Calculated required disk space: ${volume_size_gb}GB (data directory) + ${disk_space_margin_gb}GB (margin) = ${required_space_gb}GB"
+      log "PostgreSQL data directory size: ${volume_size_gb}GB" "prerequisites"
+      log "Calculated required disk space: ${volume_size_gb}GB (data directory) + ${disk_space_margin_gb}GB (margin) = ${required_space_gb}GB" "prerequisites"
     else
       # Fallback to default if volume size query failed
       required_space_gb="5"
-      log "WARNING: Failed to get data directory size, using default minimum disk space: ${required_space_gb}GB"
+      log "WARNING: Failed to get data directory size, using default minimum disk space: ${required_space_gb}GB" "prerequisites"
     fi
   fi
 
@@ -357,16 +357,16 @@ create_backup_from_db() {
   host=$(get_db_host_from_compose)
   compression_flag=$(get_compression_flag)
 
-  log "Creating backup using database container"
+  log "Creating backup using database container" "backup_execution"
 
   # Create temporary directory inside the db container
-  log "Creating temporary directory in container"
+  log "Creating temporary directory in container" "backup_execution"
   if ! compose_exec mkdir -p /tmp/backup; then
     die "Failed to create temporary directory in container" $ERR_BACKUP_FAILED
   fi
 
   # Run pg_basebackup inside the database container
-  log "Running pg_basebackup..."
+  log "Running pg_basebackup..." "backup_execution"
   if [ -n "${PGPASSWORD:-}" ]; then
     compose_exec bash -c "PGPASSWORD='$PGPASSWORD' pg_basebackup -h $host -p $db_port -U $db_user -D /tmp/backup -Ft $compression_flag -P -v"
     local backup_exit_code=$?
@@ -377,61 +377,61 @@ create_backup_from_db() {
 
   # Check if pg_basebackup failed
   if [ $backup_exit_code -ne 0 ]; then
-    log "ERROR: pg_basebackup failed with exit code $backup_exit_code"
-    log "Cleaning up failed backup attempt..."
+    log "ERROR: pg_basebackup failed with exit code $backup_exit_code" "backup_failed"
+    log "Cleaning up failed backup attempt..." "backup_cleanup"
     compose_exec rm -rf /tmp/backup 2>/dev/null || true
     die "Database backup failed - check database connection and credentials" $ERR_BACKUP_FAILED
   fi
 
-  log "pg_basebackup completed successfully"
+  log "pg_basebackup completed successfully" "backup_execution"
 
   # Copy backup files from container to host
-  log "Copying backup files from container to host..."
+  log "Copying backup files from container to host..." "backup_execution"
   if ! compose_cp "$service":/tmp/backup/. "$backup_dir/"; then
-    log "ERROR: Failed to copy backup files from container"
+    log "ERROR: Failed to copy backup files from container" "backup_failed"
     compose_exec rm -rf /tmp/backup 2>/dev/null || true
     die "Failed to copy backup files from container to host" $ERR_BACKUP_FAILED
   fi
 
   # Cleanup temporary directory in container
-  log "Cleaning up container temporary directory"
+  log "Cleaning up container temporary directory" "backup_cleanup"
   if ! compose_exec rm -rf /tmp/backup; then
-    log "WARNING: Failed to cleanup temporary directory in container"
+    log "WARNING: Failed to cleanup temporary directory in container" "backup_cleanup"
   fi
 
-  log "Backup files copied to $backup_dir"
+  log "Backup files copied to $backup_dir" "backup_execution"
   ls -lh "$backup_dir" | tee -a "$LOG_FILE"
 
   # Post-process with bzip2 if needed
   if [ "$compression" = "bzip2" ]; then
-    log "Compressing backup files with bzip2..."
+    log "Compressing backup files with bzip2..." "backup_compression"
     for tarfile in "$backup_dir"/*.tar; do
       if [ -f "$tarfile" ]; then
         local filesize=$(du -h "$tarfile" | cut -f1)
-        log "Compressing $(basename "$tarfile") ($filesize) - this may take several minutes..."
+        log "Compressing $(basename "$tarfile") ($filesize) - this may take several minutes..." "backup_compression"
 
         # Use pv if available for progress, otherwise use plain bzip2
         local bz2_file="$tarfile.bz2"
         if command -v pv >/dev/null 2>&1; then
           if pv "$tarfile" | bzip2 -9 > "$bz2_file"; then
-            log "Compression successful, removing original tar file"
+            log "Compression successful, removing original tar file" "backup_compression"
             rm "$tarfile"
           else
-            log "ERROR: bzip2 compression failed for $(basename "$tarfile"), keeping original"
+            log "ERROR: bzip2 compression failed for $(basename "$tarfile"), keeping original" "backup_failed"
             rm -f "$bz2_file"  # Remove partial bz2 file
             die "Compression failed for $(basename "$tarfile")" $ERR_BACKUP_FAILED
           fi
         else
           if bzip2 -9 -v "$tarfile"; then
-            log "Compression successful"
+            log "Compression successful" "backup_compression"
           else
-            log "ERROR: bzip2 compression failed for $(basename "$tarfile")"
+            log "ERROR: bzip2 compression failed for $(basename "$tarfile")" "backup_failed"
             die "Compression failed for $(basename "$tarfile")" $ERR_BACKUP_FAILED
           fi
         fi
       fi
     done
-    log "Compression completed"
+    log "Compression completed" "backup_compression"
     ls -lh "$backup_dir" | tee -a "$LOG_FILE"
   fi
 }
@@ -448,13 +448,13 @@ upload_backup_to_s3() {
   # Remove any duplicate slashes
   s3_path="${s3_path//\/\//\/}"
 
-  log "Uploading backup to S3: s3://$bucket/$s3_path/"
-  log "Using S3 prefix: $s3_backup_prefix"
+  log "Uploading backup to S3: s3://$bucket/$s3_path/" "s3_upload"
+  log "Using S3 prefix: $s3_backup_prefix" "s3_upload"
 
   # Count files to upload
   local file_count
   file_count=$(find "$backup_dir" -type f | wc -l)
-  log "Files to upload: $file_count"
+  log "Files to upload: $file_count" "s3_upload"
 
   # Run docker with explicit error handling
   if ! docker run -t --rm \
@@ -480,7 +480,7 @@ upload_backup_to_s3() {
     die "S3 upload failed. Check AWS credentials, endpoint, and network connectivity." $ERR_BACKUP_FAILED
   fi
 
-  log "S3 upload completed successfully"
+  log "S3 upload completed successfully" "s3_upload"
 }
 
 # Function to generate checksums for backup files
@@ -490,7 +490,7 @@ generate_checksums() {
   local checksum_file="$backup_dir/backup.sha256"
   local metadata_file="$backup_dir/backup.sha256.info"
 
-  log "Generating SHA256 checksums for backup integrity verification..."
+  log "Generating SHA256 checksums for backup integrity verification..." "backup_checksum"
 
   # Generate checksums for all files (excluding checksum/metadata files themselves)
   (cd "$backup_dir" && find . -type f ! -name "backup.sha256*" -exec sha256sum {} \; | sort -k2) > "$checksum_file"
@@ -498,8 +498,8 @@ generate_checksums() {
   local file_count
   file_count=$(wc -l < "$checksum_file")
 
-  log "Generated checksums for $file_count files"
-  log "Checksum manifest: $checksum_file"
+  log "Generated checksums for $file_count files" "backup_checksum"
+  log "Checksum manifest: $checksum_file" "backup_checksum"
 
   # Create metadata file explaining the checksum format
   cat > "$metadata_file" <<EOF
@@ -531,9 +531,9 @@ $(cat "$checksum_file" | awk '{print "#   " $2}')
 # Version: 1.3.0
 EOF
 
-  log "Generated checksum metadata: $metadata_file"
+  log "Generated checksum metadata: $metadata_file" "backup_checksum"
 
-  # Log first few checksums for debugging
+  # Log first few checksums for debugging (no event type - just informational)
   log "Sample checksums:"
   head -n 3 "$checksum_file" | while read -r line; do
     log "  $line"
@@ -553,11 +553,11 @@ cleanup_old_backups() {
 
   # Check if retention policy is configured
   if [ -z "${retention_count:-}" ] && [ -z "${retention_days:-}" ]; then
-    log "No retention policy configured, skipping cleanup"
+    log "No retention policy configured, skipping cleanup" "retention_policy"
     return 0
   fi
 
-  log "Applying retention policy to S3 backups..."
+  log "Applying retention policy to S3 backups..." "retention_policy"
 
   # List all backups in the prefix, sorted by LastModified (newest first)
   local backup_list
@@ -579,7 +579,7 @@ cleanup_old_backups() {
           --endpoint \"\$S3_ENDPOINT\" \
           --query 'reverse(sort_by(Contents, &LastModified))' \
           --output json" 2>/dev/null) || {
-    log "WARNING: Failed to list backups for retention cleanup"
+    log "WARNING: Failed to list backups for retention cleanup" "retention_policy"
     return 0
   }
 
@@ -638,13 +638,13 @@ for i, backup in enumerate(sorted_backups):
 for dir_path in to_delete:
     print(dir_path)
 " 2>/dev/null) || {
-    log "WARNING: Failed to process backup list for retention"
+    log "WARNING: Failed to process backup list for retention" "retention_policy"
     return 0
   }
 
   # Delete old backups
   if [ -z "$backup_dirs" ]; then
-    log "No old backups to delete (retention policy satisfied)"
+    log "No old backups to delete (retention policy satisfied)" "retention_policy"
     return 0
   fi
 
@@ -652,7 +652,7 @@ for dir_path in to_delete:
   while IFS= read -r backup_dir; do
     [ -z "$backup_dir" ] && continue
 
-    log "Deleting old backup: s3://$bucket/$backup_dir/"
+    log "Deleting old backup: s3://$bucket/$backup_dir/" "retention_cleanup"
 
     if docker run -t --rm \
       -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY" \
@@ -668,15 +668,15 @@ for dir_path in to_delete:
           aws configure set default.region \"\$AWS_DEFAULT_REGION\" && \
           aws s3 rm \"s3://\$S3_BUCKET/\$BACKUP_DIR/\" --recursive --endpoint-url \"\$S3_ENDPOINT\"" >/dev/null 2>&1; then
       ((delete_count++))
-      log_json "INFO" "Deleted old backup: $backup_dir" "backup_retention" "backup_dir=$backup_dir"
+      log_json "INFO" "Deleted old backup: $backup_dir" "retention_cleanup" "backup_dir=$backup_dir"
     else
-      log "WARNING: Failed to delete backup: $backup_dir"
+      log "WARNING: Failed to delete backup: $backup_dir" "retention_cleanup"
     fi
   done <<< "$backup_dirs"
 
   if [ $delete_count -gt 0 ]; then
-    log "Retention policy: deleted $delete_count old backup(s)"
-    log_json "INFO" "Retention cleanup completed" "backup_retention" "deleted_count=$delete_count"
+    log "Retention policy: deleted $delete_count old backup(s)" "retention_cleanup"
+    log_json "INFO" "Retention cleanup completed" "retention_cleanup" "deleted_count=$delete_count"
   fi
 }
 
@@ -688,7 +688,7 @@ run_backup_s3() {
   create_backup_from_db "$backup_dir"
   generate_checksums "$backup_dir" "$label"
   upload_backup_to_s3 "$backup_dir" "$label"
-  log "Checksum manifest uploaded to S3 for external verification"
+  log "Checksum manifest uploaded to S3 for external verification" "s3_upload"
   cleanup_old_backups
 }
 
@@ -699,7 +699,7 @@ run_backup_local() {
 
   create_backup_from_db "$backup_dir"
   generate_checksums "$backup_dir" "$label"
-  log "Local backup complete with checksum manifest:"
+  log "Local backup complete with checksum manifest:" "backup_completed"
   log "  - Checksums: $backup_dir/backup.sha256"
   log "  - Metadata: $backup_dir/backup.sha256.info"
 }
@@ -712,9 +712,9 @@ run_backup() {
   label=$(generate_backup_label)
   BACKUP_LABEL="$label"  # Store globally for error logging
 
-  log "Starting backup from $(get_db_host_from_compose):$db_port as user $db_user"
-  log "Backup label: $label"
-  log "Compression: $compression"
+  log "Starting backup from $(get_db_host_from_compose):$db_port as user $db_user" "backup_initialization"
+  log "Backup label: $label" "backup_initialization"
+  log "Compression: $compression" "backup_initialization"
 
   # Prepare backup directory
   if [ -n "$backup_path" ]; then
@@ -749,22 +749,22 @@ run_backup() {
 
   # Cleanup temporary directory if used for S3 (explicit check)
   if [ -n "$s3_url" ] && [ -n "$TEMP_BACKUP_DIR" ] && [ -d "$TEMP_BACKUP_DIR" ]; then
-    log "Cleaning up temporary backup directory: $TEMP_BACKUP_DIR"
+    log "Cleaning up temporary backup directory: $TEMP_BACKUP_DIR" "backup_cleanup"
     rm -rf "$TEMP_BACKUP_DIR"
     TEMP_BACKUP_DIR=""  # Clear to avoid double cleanup in trap
   fi
 
-  log "Backup completed successfully"
-  log "Backup size: ${backup_size_mb}MB, Files: $file_count, Duration: ${duration}s"
+  log "Backup completed successfully" "backup_summary"
+  log "Backup size: ${backup_size_mb}MB, Files: $file_count, Duration: ${duration}s" "backup_summary"
 
   # Determine destination
   local destination
   if [ -n "$backup_path" ]; then
     destination="local:$backup_path/$label"
-    log "Backup location: $backup_path/$label"
+    log "Backup location: $backup_path/$label" "backup_summary"
   else
     destination="s3:$s3_url/$label"
-    log "Backup uploaded to: $s3_url/$label"
+    log "Backup uploaded to: $s3_url/$label" "backup_summary"
   fi
 
   # Log structured completion event for New Relic
@@ -861,9 +861,9 @@ NGINX_LOG_FILE="$LOG_DIR/backup.log"
 # Record start time for metrics
 BACKUP_START_TIME=$(date +%s)
 
-log "=== Backup script started ==="
-log "Log file: $LOG_FILE"
-log "nginx log file: $NGINX_LOG_FILE"
+log "=== Backup script started ===" "script_lifecycle"
+log "Log file: $LOG_FILE" "script_lifecycle"
+log "nginx log file: $NGINX_LOG_FILE" "script_lifecycle"
 
 # Log start event with metadata
 log_json "INFO" "Backup started" "backup_started" \
@@ -877,4 +877,4 @@ check_args
 run_backup
 
 # Log completion
-log "=== Backup script completed successfully ==="
+log "=== Backup script completed successfully ===" "script_lifecycle"
