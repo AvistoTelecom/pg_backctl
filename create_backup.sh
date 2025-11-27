@@ -80,6 +80,7 @@ disk_space_margin_gb="2"  # Safety margin to add to volume size when calculating
 s3_backup_prefix="backups"  # Default prefix for S3 backups (e.g., "backups" -> s3://bucket/backups/LABEL/)
 retention_count=""  # Keep last N backups (takes priority over retention_days)
 retention_days=""   # Keep backups for N days
+backup_label_regex="[0-9]{8}T[0-9]{6}"  # Default regex pattern for backup directory labels (YYYYMMDDTHHMMSS)
 
 # Custom config handler for create_backup specific options
 config_handler() {
@@ -115,6 +116,7 @@ config_handler() {
         disk_space_margin_gb) disk_space_margin_gb="$value" ;;
         retention_count) retention_count="$value" ;;
         retention_days) retention_days="$value" ;;
+        backup_label_regex) backup_label_regex="$value" ;;
       esac
       ;;
     aws)
@@ -338,6 +340,27 @@ generate_backup_label() {
   fi
 }
 
+# Function to validate retention policy values
+validate_retention_values() {
+  # Validate retention_count if set
+  if [ -n "$retention_count" ]; then
+    if ! [[ "$retention_count" =~ ^[0-9]+$ ]] || [ "$retention_count" -le 0 ]; then
+      log "ERROR: retention_count must be a positive integer (got: '$retention_count')" "validation"
+      return 1
+    fi
+  fi
+
+  # Validate retention_days if set
+  if [ -n "$retention_days" ]; then
+    if ! [[ "$retention_days" =~ ^[0-9]+$ ]] || [ "$retention_days" -le 0 ]; then
+      log "ERROR: retention_days must be a positive integer (got: '$retention_days')" "validation"
+      return 1
+    fi
+  fi
+
+  return 0
+}
+
 # Function to get database host from compose service
 get_db_host_from_compose() {
   if [ -n "$db_host" ]; then
@@ -557,6 +580,12 @@ cleanup_old_backups() {
     return 0
   fi
 
+  # Validate retention values
+  if ! validate_retention_values; then
+    log "ERROR: Invalid retention policy values, skipping S3 cleanup" "retention_policy"
+    return 1
+  fi
+
   log "Applying retention policy to S3 backups..." "retention_policy"
 
   # List all backups in the prefix, sorted by LastModified (newest first)
@@ -680,6 +709,96 @@ for dir_path in to_delete:
   fi
 }
 
+# Function to cleanup old local backups based on retention policy
+cleanup_old_local_backups() {
+  local backup_root="$1"  # Root backup directory (e.g., /backups/postgres)
+
+  # Check if retention policy is configured
+  if [ -z "${retention_count:-}" ] && [ -z "${retention_days:-}" ]; then
+    log "No retention policy configured, skipping cleanup" "retention_policy"
+    return 0
+  fi
+
+  # Validate retention values
+  if ! validate_retention_values; then
+    log "ERROR: Invalid retention policy values, skipping local cleanup" "retention_policy"
+    return 1
+  fi
+
+  log "Applying retention policy to local backups in $backup_root..." "retention_policy"
+
+  # Find all backup directories (directories matching backup_label_regex pattern)
+  local backup_dirs
+  backup_dirs=$(find "$backup_root" -maxdepth 1 -type d -regextype posix-extended \
+    -regex ".*/${backup_label_regex}" -printf "%T@ %p\n" 2>/dev/null | sort -rn | awk '{print $2}')
+
+  if [ -z "$backup_dirs" ]; then
+    log "No backups found in $backup_root" "retention_policy"
+    return 0
+  fi
+
+  local backup_count
+  backup_count=$(echo "$backup_dirs" | wc -l)
+  log "Found $backup_count backup(s) in $backup_root" "retention_policy"
+
+  # Determine which backups to delete
+  local to_delete=()
+  local index=0
+
+  while IFS= read -r backup_dir; do
+    [ -z "$backup_dir" ] && continue
+
+    local keep=false
+
+    # Priority 1: retention_count
+    if [ -n "$retention_count" ] && [ "$retention_count" -gt 0 ]; then
+      if [ $index -lt "$retention_count" ]; then
+        keep=true
+      fi
+    # Priority 2: retention_days (if no retention_count)
+    elif [ -n "$retention_days" ] && [ "$retention_days" -gt 0 ]; then
+      local dir_mtime
+      dir_mtime=$(stat -c %Y "$backup_dir" 2>/dev/null || echo "0")
+      local current_time
+      current_time=$(date +%s)
+      local age_days=$(( (current_time - dir_mtime) / 86400 ))
+
+      if [ "$age_days" -lt "$retention_days" ]; then
+        keep=true
+      fi
+    fi
+
+    if [ "$keep" = false ]; then
+      to_delete+=("$backup_dir")
+    fi
+
+    ((index++))
+  done <<< "$backup_dirs"
+
+  # Delete old backups
+  if [ ${#to_delete[@]} -eq 0 ]; then
+    log "No old backups to delete (retention policy satisfied)" "retention_policy"
+    return 0
+  fi
+
+  local delete_count=0
+  for backup_dir in "${to_delete[@]}"; do
+    log "Deleting old backup: $backup_dir" "retention_cleanup"
+
+    if rm -rf "$backup_dir"; then
+      ((delete_count++))
+      log_json "INFO" "Deleted old backup: $(basename "$backup_dir")" "retention_cleanup" "backup_dir=$backup_dir"
+    else
+      log "WARNING: Failed to delete backup: $backup_dir" "retention_cleanup"
+    fi
+  done
+
+  if [ $delete_count -gt 0 ]; then
+    log "Retention policy: deleted $delete_count old backup(s)" "retention_cleanup"
+    log_json "INFO" "Retention cleanup completed" "retention_cleanup" "deleted_count=$delete_count"
+  fi
+}
+
 # Function to run backup with S3 storage
 run_backup_s3() {
   local backup_dir="$1"
@@ -702,6 +821,11 @@ run_backup_local() {
   log "Local backup complete with checksum manifest:" "backup_completed"
   log "  - Checksums: $backup_dir/backup.sha256"
   log "  - Metadata: $backup_dir/backup.sha256.info"
+
+  # Apply retention policy to local backups
+  local backup_root
+  backup_root=$(dirname "$backup_dir")
+  cleanup_old_local_backups "$backup_root"
 }
 
 # Main backup orchestration function
