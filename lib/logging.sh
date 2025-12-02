@@ -1,139 +1,96 @@
 #!/bin/bash
 
 # Shared logging library for pg_backctl
-# Provides consistent logging across all scripts with optional JSON/nginx format support
+# Provides consistent JSON logging across all scripts
 
 # Global variables that scripts can set:
-# - LOG_FILE: Path to log file (optional)
-# - NGINX_LOG_FILE: Path to nginx-format log file for New Relic (optional)
+# - LOG_FILE: Path to log file (optional, for file logging)
 # - SCRIPT_NAME: Name of the calling script (for logging context)
 
 # Escape JSON strings
 json_escape() {
   local string="$1"
-  # Escape backslashes, quotes, and newlines
-  echo "$string" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\n/\\n/g'
+  # Escape backslashes, double quotes, tabs, newlines, and carriage returns
+  printf '%s' "$string" | python3 -c 'import json, sys; print(json.dumps(sys.stdin.read())[1:-1])'
 }
 
-# Logging function for New Relic (nginx format)
-# Usage: log_json "LEVEL" "message" "event_type" "key1=value1" "key2=value2" ...
+# Main JSON logging function
+# Usage: log_json "LEVEL" "message" ["key1=value1" "key2=value2" ...]
+# Outputs JSON to stdout and optionally to LOG_FILE
 log_json() {
   local level="$1"
   local message="$2"
-  local event_type="${3:-log}"
-  shift 3
+  shift 2
 
-  # Skip if nginx log file not configured
-  if [ -z "$NGINX_LOG_FILE" ]; then
-    return 0
+  local timestamp
+  timestamp=$(date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')
+
+  # Escape mandatory fields
+  local level_escaped=$(json_escape "$level")
+  local message_escaped=$(json_escape "$message")
+
+  # Start building JSON
+  local json="{\"level\":\"$level_escaped\",\"log\":\"$message_escaped\",\"timestamp\":\"$timestamp\""
+
+  # Add script name if available
+  if [ -n "${SCRIPT_NAME:-}" ]; then
+    local script_escaped=$(json_escape "$SCRIPT_NAME")
+    json="$json,\"script\":\"$script_escaped\""
   fi
 
-  local timestamp_nginx=$(date '+%d/%b/%Y:%H:%M:%S %z')
-
-  # Parse additional fields into associative array
-  local -A fields
-  fields["status"]="success"
-  fields["backup_label"]="-"
-  fields["destination"]="-"
-  fields["compression"]="-"
-  fields["backup_size_bytes"]="0"
-  fields["duration_seconds"]="0"
-
-  # Parse key=value pairs
+  # Parse additional fields (key=value pairs)
   while [ $# -gt 0 ]; do
     local key="${1%%=*}"
     local value="${1#*=}"
-    fields["$key"]="$value"
+
+    # Skip empty keys
+    if [ -n "$key" ]; then
+      local key_escaped=$(json_escape "$key")
+      local value_escaped=$(json_escape "$value")
+      json="$json,\"$key_escaped\":\"$value_escaped\""
+    fi
     shift
   done
 
-  # Determine HTTP-style status code
-  local status_code
-  case "$level" in
-    ERROR) status_code="500" ;;
-    WARN)  status_code="400" ;;
-    *)     status_code="200" ;;
-  esac
+  # Close JSON object
+  json="$json}"
 
-  if [ "${fields[status]}" = "failed" ]; then
-    status_code="500"
+  # Output to stdout (for container logs)
+  echo "$json"
+
+  # Also write to log file if configured
+  if [ -n "${LOG_FILE:-}" ]; then
+    echo "$json" >> "$LOG_FILE"
   fi
-
-  # nginx combined log format:
-  # $remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent"
-  #
-  # Adapted for pg_backctl:
-  # $hostname - $service [$timestamp] "$message" $status_code $bytes "$destination" "$user_agent"
-  #
-  # The "request" field contains: actual log message (clean, no prefix, truncated to 200 chars)
-  # The "referer" field contains: destination or additional metadata
-  # The "user_agent" field contains: event_type + version + all key=value pairs (for parsing/filtering)
-
-  # Truncate message to 200 chars for readability
-  local truncated_msg="${message:0:200}"
-  if [ ${#message} -gt 200 ]; then
-    truncated_msg="${truncated_msg}..."
-  fi
-
-  # Build request field: just the message (clean, human-readable)
-  local request="$truncated_msg"
-
-  # Build user_agent with event_type first, then all metadata fields
-  local user_agent="pg_backctl/1.3.0 event=$event_type"
-  for key in "${!fields[@]}"; do
-    user_agent="$user_agent ${key}=${fields[$key]}"
-  done
-
-  local nginx_log="$(hostname) - pg_backctl [$timestamp_nginx] \"$request\" $status_code ${fields[backup_size_bytes]} \"${fields[destination]}\" \"$user_agent\""
-
-  echo "$nginx_log" >> "$NGINX_LOG_FILE"
 }
 
-# Standard logging function
-# Usage: log "message" ["event_type"]
-# Supports prefixes: ERROR:, WARNING:
-# Optional event_type parameter for nginx-format logs (e.g., "disk_check", "backup_started")
+# Standard logging function (wrapper for log_json)
+# Usage: log "message" ["key1=value1" "key2=value2" ...]
+# Auto-detects level from message prefixes (ERROR:, WARNING:)
 log() {
   local msg="$1"
-  local event_type="${2:-}"
-  local timestamp
-  timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+  shift
 
-  local script_prefix="${SCRIPT_NAME:+[$SCRIPT_NAME] }"
-
-  # Write to log file if configured
-  if [ -n "$LOG_FILE" ]; then
-    echo "[$timestamp] ${script_prefix}$msg" >> "$LOG_FILE"
-  fi
-
-  # Also echo to stdout for non-error messages
-  if [[ ! "$msg" =~ ^ERROR: ]]; then
-    echo "${script_prefix}$msg"
-  fi
-
-  # Determine log level for JSON logging
+  # Determine log level from message prefix
   local level="INFO"
-  if [[ "$msg" =~ ^ERROR: ]]; then
+  local clean_msg="$msg"
+
+  if [[ "$msg" =~ ^ERROR:\ * ]]; then
     level="ERROR"
-  elif [[ "$msg" =~ ^WARNING: ]]; then
+    clean_msg="${msg#ERROR: }"
+  elif [[ "$msg" =~ ^WARNING:\ * ]]; then
     level="WARN"
+    clean_msg="${msg#WARNING: }"
   fi
 
-  # Log to nginx format with appropriate event type
-  if [ -n "$event_type" ]; then
-    # Use provided event type
-    local clean_msg="${msg#ERROR: }"
-    clean_msg="${clean_msg#WARNING: }"
-    log_json "$level" "$clean_msg" "$event_type"
-  fi
+  # Call log_json with remaining arguments
+  log_json "$level" "$clean_msg" "$@"
 }
 
-# Simple logging function for entrypoint scripts
-# Usage: log_simple "message"
+# Simple logging function (alias to log_json for backward compatibility)
+# Usage: log_simple "message" ["key1=value1" ...]
 log_simple() {
-  local msg="$1"
-  local script_prefix="${SCRIPT_NAME:+[$SCRIPT_NAME] }"
-  echo "${script_prefix}$msg"
+  log_json "INFO" "$@"
 }
 
 # Error function - logs error and exits
@@ -143,18 +100,8 @@ die() {
   local msg="$1"
   local code="${2:-${ERR_UNKNOWN:-99}}"
 
-  # Use appropriate logging based on what's available
-  if declare -f log >/dev/null 2>&1; then
-    log "ERROR: $msg"
-  else
-    log_simple "ERROR: $msg" >&2
-  fi
+  # Log error with exit code
+  log_json "ERROR" "$msg" "error_code=$code"
 
-  # Try to log JSON if function exists
-  if declare -f log_json >/dev/null 2>&1; then
-    log_json "ERROR" "$msg" "error" "error_code=$code"
-  fi
-
-  echo "Error $code: $msg" >&2
   exit "$code"
 }

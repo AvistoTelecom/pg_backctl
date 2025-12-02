@@ -13,31 +13,32 @@ source "$SCRIPT_DIR/lib/docker_utils.sh"
 # Set up logging context
 SCRIPT_NAME="create_backup"
 
-# Global variables for cleanup
+# Global variables for cleanup and enrichment
 TEMP_BACKUP_DIR=""
 LOG_FILE=""
-NGINX_LOG_FILE=""
 BACKUP_START_TIME=""
 BACKUP_LABEL=""
+DB_SIZE_BYTES=""
+BACKUP_SIZE_BYTES=""
 
 
 # Cleanup function for trap
 cleanup_on_error() {
   local exit_code=$?
   if [ $exit_code -ne 0 ]; then
-    log "ERROR: Script failed with exit code $exit_code, cleaning up..."
+    log "ERROR: Script failed with exit code $exit_code, cleaning up..." "error_code=$exit_code"
 
-    # Log failure event for New Relic
+    # Log failure event with all available context
     if [ -n "$BACKUP_START_TIME" ]; then
       local failure_time=$(date +%s)
       local duration=$((failure_time - BACKUP_START_TIME))
 
-      log_json "ERROR" "Backup failed" "backup_failed" \
+      log_json "ERROR" "Backup failed" \
+        "event=backup_failed" \
         "backup_label=${BACKUP_LABEL:-unknown}" \
-        "duration_seconds=$duration" \
+        "backup_time=$duration" \
         "exit_code=$exit_code" \
-        "compression=${compression:-unknown}" \
-        "status=failed"
+        "compression=${compression:-unknown}"
     fi
 
     # Clean up temporary backup directory if it exists
@@ -252,13 +253,20 @@ check_disk_space() {
   local available_gb
   available_gb=$(df -BG "$target_dir" | awk 'NR==2 {print $4}' | sed 's/G//')
 
-  log "Available disk space in $target_dir: ${available_gb}GB" "disk_check"
+  log "Available disk space in $target_dir: ${available_gb}GB" \
+    "event=disk_check" \
+    "target_dir=$target_dir" \
+    "available_gb=$available_gb" \
+    "required_gb=$min_free_gb"
 
   if [ "$available_gb" -lt "$min_free_gb" ]; then
     die "Insufficient disk space in $target_dir. Available: ${available_gb}GB, Required: at least ${min_free_gb}GB" $ERR_DISK_SPACE
   fi
 
-  log "Disk space check passed" "disk_check"
+  log "Disk space check passed" \
+    "event=disk_check_passed" \
+    "size_check=passed" \
+    "available_gb=$available_gb"
 }
 
 # Function check arguments
@@ -287,18 +295,25 @@ check_args() {
 
   # If min_disk_space_gb is not set, calculate from volume size
   if [ -z "$required_space_gb" ]; then
-    log "Querying PostgreSQL data directory size..." "prerequisites"
+    log "Querying PostgreSQL data directory size..." "event=prerequisites"
     local volume_size_gb
     volume_size_gb=$(get_postgres_volume_size_gb)
 
     if [ "$volume_size_gb" -gt 0 ] 2>/dev/null; then
       required_space_gb=$((volume_size_gb + disk_space_margin_gb))
-      log "PostgreSQL data directory size: ${volume_size_gb}GB" "prerequisites"
-      log "Calculated required disk space: ${volume_size_gb}GB (data directory) + ${disk_space_margin_gb}GB (margin) = ${required_space_gb}GB" "prerequisites"
+      DB_SIZE_BYTES=$((volume_size_gb * 1073741824))  # Store for enrichment
+      log "PostgreSQL data directory size: ${volume_size_gb}GB" \
+        "event=db_size_detected" \
+        "db_size=${volume_size_gb}GB" \
+        "db_size_bytes=$DB_SIZE_BYTES"
+      log "Calculated required disk space: ${volume_size_gb}GB (data directory) + ${disk_space_margin_gb}GB (margin) = ${required_space_gb}GB" \
+        "event=disk_space_calculated" \
+        "required_gb=$required_space_gb"
     else
       # Fallback to default if volume size query failed
       required_space_gb="5"
-      log "WARNING: Failed to get data directory size, using default minimum disk space: ${required_space_gb}GB" "prerequisites"
+      log "WARNING: Failed to get data directory size, using default minimum disk space: ${required_space_gb}GB" \
+        "event=db_size_query_failed"
     fi
   fi
 
@@ -554,15 +569,18 @@ $(cat "$checksum_file" | awk '{print "#   " $2}')
 # Version: 1.3.0
 EOF
 
-  log "Generated checksum metadata: $metadata_file" "backup_checksum"
+  log "Generated checksum metadata: $metadata_file" \
+    "event=checksum_metadata_generated" \
+    "metadata_file=$metadata_file"
 
   # Log first few checksums for debugging (no event type - just informational)
-  log "Sample checksums:"
+  log "Sample checksums:" "event=checksum_sample"
   head -n 3 "$checksum_file" | while read -r line; do
     log "  $line"
   done
 
-  log_json "INFO" "Checksums generated" "backup_checksum" \
+  log "Checksums generated" \
+    "event=backup_checksum" \
     "file_count=$file_count" \
     "checksum_file=backup.sha256" \
     "metadata_file=backup.sha256.info" \
@@ -576,17 +594,23 @@ cleanup_old_backups() {
 
   # Check if retention policy is configured
   if [ -z "${retention_count:-}" ] && [ -z "${retention_days:-}" ]; then
-    log "No retention policy configured, skipping cleanup" "retention_policy"
+    log "No retention policy configured, skipping cleanup" \
+      "event=retention_policy_skipped" \
+      "retention_config=none"
     return 0
   fi
 
   # Validate retention values
   if ! validate_retention_values; then
-    log "ERROR: Invalid retention policy values, skipping S3 cleanup" "retention_policy"
+    log "ERROR: Invalid retention policy values, skipping S3 cleanup" \
+      "event=retention_policy_invalid"
     return 1
   fi
 
-  log "Applying retention policy to S3 backups..." "retention_policy"
+  local retention_config="${retention_count:+count=$retention_count}${retention_days:+days=$retention_days}"
+  log "Applying retention policy to S3 backups..." \
+    "event=retention_policy_start" \
+    "retention_config=$retention_config"
 
   # List all backups in the prefix, sorted by LastModified (newest first)
   local backup_list
@@ -673,15 +697,20 @@ for dir_path in to_delete:
 
   # Delete old backups
   if [ -z "$backup_dirs" ]; then
-    log "No old backups to delete (retention policy satisfied)" "retention_policy"
+    log "No old backups to delete (retention policy satisfied)" \
+      "event=retention_policy_satisfied" \
+      "detected_backups=0"
     return 0
   fi
 
+  local total_backups=$(echo "$backup_dirs" | wc -l)
   local delete_count=0
   while IFS= read -r backup_dir; do
     [ -z "$backup_dir" ] && continue
 
-    log "Deleting old backup: s3://$bucket/$backup_dir/" "retention_cleanup"
+    log "Deleting old backup: s3://$bucket/$backup_dir/" \
+      "event=retention_cleanup_delete" \
+      "backup_dir=$backup_dir"
 
     if docker run -t --rm \
       -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY" \
@@ -697,15 +726,22 @@ for dir_path in to_delete:
           aws configure set default.region \"\$AWS_DEFAULT_REGION\" && \
           aws s3 rm \"s3://\$S3_BUCKET/\$BACKUP_DIR/\" --recursive --endpoint-url \"\$S3_ENDPOINT\"" >/dev/null 2>&1; then
       ((delete_count++))
-      log_json "INFO" "Deleted old backup: $backup_dir" "retention_cleanup" "backup_dir=$backup_dir"
+      log "Deleted old backup: $backup_dir" \
+        "event=retention_cleanup_deleted" \
+        "backup_dir=$backup_dir"
     else
-      log "WARNING: Failed to delete backup: $backup_dir" "retention_cleanup"
+      log "WARNING: Failed to delete backup: $backup_dir" \
+        "event=retention_cleanup_failed" \
+        "backup_dir=$backup_dir"
     fi
   done <<< "$backup_dirs"
 
   if [ $delete_count -gt 0 ]; then
-    log "Retention policy: deleted $delete_count old backup(s)" "retention_cleanup"
-    log_json "INFO" "Retention cleanup completed" "retention_cleanup" "deleted_count=$delete_count"
+    log "Retention policy: deleted $delete_count old backup(s)" \
+      "event=retention_cleanup_completed" \
+      "detected_backups=$total_backups" \
+      "deleted_count=$delete_count" \
+      "retention_config=$retention_config"
   fi
 }
 
@@ -794,8 +830,11 @@ cleanup_old_local_backups() {
   done
 
   if [ $delete_count -gt 0 ]; then
-    log "Retention policy: deleted $delete_count old backup(s)" "retention_cleanup"
-    log_json "INFO" "Retention cleanup completed" "retention_cleanup" "deleted_count=$delete_count"
+    log "Retention policy: deleted $delete_count old backup(s)" \
+      "event=retention_cleanup_completed" \
+      "detected_backups=$backup_count" \
+      "deleted_count=$delete_count" \
+      "retention_config=$retention_config"
   fi
 }
 
@@ -836,9 +875,17 @@ run_backup() {
   label=$(generate_backup_label)
   BACKUP_LABEL="$label"  # Store globally for error logging
 
-  log "Starting backup from $(get_db_host_from_compose):$db_port as user $db_user" "backup_initialization"
-  log "Backup label: $label" "backup_initialization"
-  log "Compression: $compression" "backup_initialization"
+  log "Starting backup from $(get_db_host_from_compose):$db_port as user $db_user" \
+    "event=backup_initialization" \
+    "db_host=$(get_db_host_from_compose)" \
+    "db_port=$db_port" \
+    "db_user=$db_user"
+  log "Backup label: $label" \
+    "event=backup_label_set" \
+    "backup_label=$label"
+  log "Compression: $compression" \
+    "event=compression_set" \
+    "compression=$compression"
 
   # Prepare backup directory
   if [ -n "$backup_path" ]; then
@@ -869,41 +916,43 @@ run_backup() {
   local duration=$((backup_end_time - BACKUP_START_TIME))
   local backup_size_bytes=$(du -sb "$abs_backup_path/$label" 2>/dev/null | cut -f1)
   local backup_size_mb=$((backup_size_bytes / 1024 / 1024))
+  local backup_size_gb=$(awk "BEGIN {printf \"%.2f\", $backup_size_bytes / 1073741824}")
   local file_count=$(find "$abs_backup_path/$label" -type f | wc -l)
+  BACKUP_SIZE_BYTES="$backup_size_bytes"  # Store for enrichment
 
   # Cleanup temporary directory if used for S3 (explicit check)
   if [ -n "$s3_url" ] && [ -n "$TEMP_BACKUP_DIR" ] && [ -d "$TEMP_BACKUP_DIR" ]; then
-    log "Cleaning up temporary backup directory: $TEMP_BACKUP_DIR" "backup_cleanup"
+    log "Cleaning up temporary backup directory: $TEMP_BACKUP_DIR" \
+      "event=backup_cleanup"
     rm -rf "$TEMP_BACKUP_DIR"
     TEMP_BACKUP_DIR=""  # Clear to avoid double cleanup in trap
   fi
-
-  log "Backup completed successfully" "backup_summary"
-  log "Backup size: ${backup_size_mb}MB, Files: $file_count, Duration: ${duration}s" "backup_summary"
 
   # Determine destination
   local destination
   if [ -n "$backup_path" ]; then
     destination="local:$backup_path/$label"
-    log "Backup location: $backup_path/$label" "backup_summary"
   else
-    destination="s3:$s3_url/$label"
-    log "Backup uploaded to: $s3_url/$label" "backup_summary"
+    destination="s3:$s3_url/${s3_backup_prefix}/$label"
   fi
 
-  # Log structured completion event for New Relic
-  log_json "INFO" "Backup completed successfully" "backup_completed" \
+  # Determine retention config
+  local retention_config="${retention_count:+count=$retention_count}${retention_days:+days=$retention_days}"
+  [ -z "$retention_config" ] && retention_config="none"
+
+  log "Backup completed successfully" \
+    "event=backup_completed" \
     "backup_label=$label" \
-    "duration_seconds=$duration" \
-    "backup_size_mb=$backup_size_mb" \
+    "backup_time=$duration" \
+    "db_size=${DB_SIZE_BYTES:-unknown}" \
+    "backup_size=${backup_size_gb}GB" \
     "backup_size_bytes=$backup_size_bytes" \
-    "file_count=$file_count" \
+    "backup_destination=$destination" \
+    "retention_config=$retention_config" \
     "compression=$compression" \
-    "destination=$destination" \
+    "file_count=$file_count" \
     "db_host=$(get_db_host_from_compose)" \
-    "db_port=$db_port" \
-    "db_user=$db_user" \
-    "status=success"
+    "db_port=$db_port"
 }
 
 # Get script directory
@@ -972,25 +1021,24 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Initialize log files
+# Initialize log file
 LOG_DIR="$SCRIPT_DIR/logs"
 mkdir -p "$LOG_DIR"
 
-# Human-readable log with timestamp in filename (for history)
-LOG_FILE="$LOG_DIR/backup_$(date +%Y%m%dT%H%M%S).log"
-
-# nginx format log with consistent name (for New Relic to monitor)
-NGINX_LOG_FILE="$LOG_DIR/backup.log"
+# Single JSON log file for all backups
+LOG_FILE="$LOG_DIR/backup.log"
 
 # Record start time for metrics
 BACKUP_START_TIME=$(date +%s)
 
-log "=== Backup script started ===" "script_lifecycle"
-log "Log file: $LOG_FILE" "script_lifecycle"
-log "nginx log file: $NGINX_LOG_FILE" "script_lifecycle"
+log "Backup script started" \
+  "event=script_lifecycle" \
+  "action=started" \
+  "log_file=$LOG_FILE"
 
 # Log start event with metadata
-log_json "INFO" "Backup started" "backup_started" \
+log "Backup started" \
+  "event=backup_started" \
   "backup_type=pg_basebackup" \
   "compression=$compression"
 
@@ -1001,4 +1049,6 @@ check_args
 run_backup
 
 # Log completion
-log "=== Backup script completed successfully ===" "script_lifecycle"
+log "Backup script completed successfully" \
+  "event=script_lifecycle" \
+  "action=completed"
