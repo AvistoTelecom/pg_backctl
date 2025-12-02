@@ -13,9 +13,6 @@ source "$SCRIPT_DIR/lib/docker_utils.sh"
 # Set up logging context
 SCRIPT_NAME="import_db_backup"
 
-# Additional error codes specific to this script
-ERR_LOCAL_BACKUP=13     # Local backup files missing
-
 # variables default values
 override_volume=false
 replace_conf=""
@@ -83,8 +80,8 @@ config_handler() {
   esac
 }
 
-# Check for required commands
-check_required_commands docker sed grep aws
+# Check for required host commands (only what we need on the host)
+check_required_commands docker sed grep
 
 # Print usage/help
 usage() {
@@ -170,7 +167,7 @@ check_args() {
 # Check local backup
 check_local() {
   if [ ! -e "${backup_path:-}/base.tar.gz" ] || [ ! -e "${backup_path:-}/pg_wal.tar.gz" ]; then
-    die "Missing files, your local folder should contain base.tar.gz and pg_wal.tar.gz" $ERR_LOCAL_BACKUP
+    die "Missing files, your local folder should contain base.tar.gz and pg_wal.tar.gz" $ERR_MISSING_CONF
   fi
 }
 # check if AWS or local backup + run differents checks
@@ -196,14 +193,19 @@ up_db() {
     replace_init_configuration
   fi
 
-  echo "Sleeping for $sleep_time seconds to allow the database to start..."
+  log_simple "Waiting for database to start" \
+    "event=database_startup_wait" \
+    "sleep_time=$sleep_time"
   sleep "$sleep_time"
 }
 
 # Function pg_backctl with S3 storage
 run_pg_backctl() {
   local vol="${1:-PG_BACKCTL_STANDBY_VOLUME}"
-  echo "> Starting restoration in S3 mode"
+  log_simple "Starting restoration in S3 mode" \
+    "event=restore_start" \
+    "mode=s3" \
+    "volume=$vol"
 
   # Build docker run command with optional S3_BACKUP_PATH
   local docker_cmd="docker run -t --rm \
@@ -215,11 +217,17 @@ run_pg_backctl() {
 
   # Add S3_BACKUP_PATH if specified (specific backup mode)
   if [ -n "$s3_backup_path" ]; then
-    echo "> Using specific S3 backup path: $s3_backup_path"
+    log_simple "Using specific S3 backup path: $s3_backup_path" \
+      "event=restore_mode" \
+      "mode=specific" \
+      "s3_backup_path=$s3_backup_path"
     docker_cmd="$docker_cmd -e S3_BACKUP_PATH=\"$s3_backup_path\""
   else
     # Auto-detect mode - pass search prefix
-    echo "> Auto-detecting latest backup in: $s3_search_prefix"
+    log_simple "Auto-detecting latest backup in: $s3_search_prefix" \
+      "event=restore_mode" \
+      "mode=auto_detect" \
+      "s3_search_prefix=$s3_search_prefix"
     docker_cmd="$docker_cmd -e S3_SEARCH_PREFIX=\"$s3_search_prefix\""
   fi
 
@@ -230,7 +238,11 @@ run_pg_backctl() {
 # Function pg_backctl with local storage
 run_local() {
   local vol="${1:-PG_BACKCTL_STANDBY_VOLUME}"
-  echo "Starting pg_backctl in local backup mode"
+  log_simple "Starting pg_backctl in local backup mode" \
+    "event=restore_start" \
+    "mode=local" \
+    "volume=$vol" \
+    "backup_path=${backup_path:-}"
   docker run -t --rm \
   -e backup_path="${backup_path:-}" \
   -v "${backup_path:-}":/backup \
@@ -247,19 +259,25 @@ replace_init_configuration() {
 # Function replace conf
 replace_configuration() {
   if [ -n "$replace_conf" ]; then
-    echo "> Replacing postgresql.auto.conf with custom configuration..."
+    log_simple "Replacing postgresql.auto.conf with custom configuration..." \
+      "event=config_replace_start" \
+      "config_file=$replace_conf"
     compose_cp "$replace_conf" "$service":/var/lib/postgresql/data/postgresql.auto.conf
     compose_restart
-    echo "  ✓ Configuration replaced and service restarted"
+    log_simple "Configuration replaced and service restarted" \
+      "event=config_replace_completed"
   else
-    echo "> Skipping postgresql.auto.conf replacement (not configured)"
+    log_simple "Skipping postgresql.auto.conf replacement (not configured)" \
+      "event=config_replace_skipped"
   fi
 }
 
 # Function to copy and execute post-init SQL scripts in the container
 post_init_script() {
   if [ -n "$post_init_conf" ]; then
-    echo "Copying and running post-init SQL scripts from $post_init_conf..."
+    log_simple "Copying post-init SQL scripts" \
+      "event=post_init_copy_start" \
+      "source=$post_init_conf"
 
     # Copy the folder into the container
     compose_cp "$post_init_conf" "$service":/tmp/init-scripts/
@@ -275,13 +293,16 @@ post_init_script() {
       pass_env="PGPASSWORD=$pass"
     fi
 
-    echo "Waiting for the database to be ready..."
+    log_simple "Waiting for database to be ready" \
+      "event=post_init_wait"
     sleep 5  # Wait for the container to be ready
 
     # Execute each .sql script in alphabetical order
     for script in $(find "$post_init_conf" -maxdepth 1 -type f -name "*.sql" | sort); do
       filename=$(basename "$script")
-      echo "Executing script: $filename"
+      log_simple "Executing post-init script" \
+        "event=post_init_script_exec" \
+        "script=$filename"
       # Use docker compose exec to run psql inside the container
       if [ -n "$pass" ]; then
         compose_exec bash -c "PGPASSWORD='$pass' psql -U '$user' -d '$db' -f '/tmp/init-scripts/$filename'"
@@ -289,20 +310,27 @@ post_init_script() {
         compose_exec psql -U "$user" -d "$db" -f "/tmp/init-scripts/$filename"
       fi
     done
+    log_simple "Post-init scripts completed" \
+      "event=post_init_completed"
   else
-    echo "> Skiped: No post-init scripts provided in $post_init_conf"
+    log_simple "Skipping post-init scripts (not configured)" \
+      "event=post_init_skipped"
   fi
 }
 
 # Function to copy pg_hba.conf into the container
 replace_pg_hba() {
   if [ -n "$replace_pg_hba_conf" ]; then
-    echo "> Replacing pg_hba.conf with custom configuration..."
+    log_simple "Replacing pg_hba.conf with custom configuration" \
+      "event=pg_hba_replace_start" \
+      "config_file=$replace_pg_hba_conf"
     compose_cp "$replace_pg_hba_conf" "$service":/var/lib/postgresql/data/pg_hba.conf
     compose_restart
-    echo "  ✓ pg_hba.conf replaced and service restarted"
+    log_simple "pg_hba.conf replaced and service restarted" \
+      "event=pg_hba_replace_completed"
   else
-    echo "> Skipping pg_hba.conf replacement (not configured)"
+    log_simple "Skipping pg_hba.conf replacement (not configured)" \
+      "event=pg_hba_replace_skipped"
   fi
 }
 
@@ -337,7 +365,8 @@ fi
 # Load config file if specified (medium priority - overrides .env)
 if [ -n "$config_file" ]; then
   parse_config_file "$config_file" config_handler
-  echo "Configuration loaded from: $config_file"
+  log_simple "Configuration loaded from file" \
+    "config_file=$config_file"
 fi
 
 # Parse remaining command line arguments (highest priority - overrides config file)
@@ -404,13 +433,14 @@ fi
 case $mode in
   0)
     # check if a recovery mode is selected
-    echo "Please specify the recovery mode by using either -o, -V or -S"
-    exit 1
+    die "Please specify the recovery mode by using either -o, -V or -S" $ERR_USAGE
     ;;
   1)
     # Run in standby mode
     # run in local or aws mode
-    echo "Starting pg_backctl"
+    log_simple "Starting standby mode recovery" \
+      "event=standby_mode_start" \
+      "pgversion=$pgversion"
     if [ -n "${backup_path:-}" ]; then
       run_local
     else
@@ -420,6 +450,10 @@ case $mode in
     -v PG_BACKCTL_STANDBY_VOLUME:/var/lib/postgresql/data \
     postgres:"$pgversion"
 
+    log_simple "Standby database started successfully" \
+      "event=standby_mode_completed" \
+      "volume=PG_BACKCTL_STANDBY_VOLUME" \
+      "pgversion=$pgversion"
     echo ""
     echo "========================================="
     echo "✓ Standby database started successfully!"
@@ -436,7 +470,9 @@ case $mode in
     # Down container
     compose_down
 
-    echo "get docker compose volume name of $volume_name"
+    log_simple "Resolving full Docker volume name" \
+      "event=volume_name_resolve" \
+      "volume_name=$volume_name"
     vol_name=$(get_full_volume_name "$volume_name")
 
     # Check if volume exists
@@ -446,26 +482,35 @@ case $mode in
 
     # pg_backctl handles the restoration of the backup
     # run in local or aws mode
-    echo "> Starting pg_backctl on $vol_name"
+    log_simple "Starting pg_backctl restore" \
+      "event=restore_start" \
+      "mode=override" \
+      "volume=$vol_name"
     if [ -n "${backup_path:-}" ]; then
       run_local "$vol_name"
     else
       run_pg_backctl "$vol_name"
     fi
-    echo "> Basebackup restored to $vol_name"
+    log_simple "Base backup restored" \
+      "event=restore_completed" \
+      "volume=$vol_name"
 
     # Build replace_init_conf from replace_conf if replace_conf is set
     if [ -n "$replace_conf" ]; then
       replace_init_conf="${replace_conf%.auto.conf}.init.auto.conf"
       if [ -e "$replace_init_conf" ]; then
-      
-      echo "> Replacing postgresql.auto.conf with $replace_init_conf"
+
+      log_simple "Applying initial postgresql configuration" \
+        "event=config_init_start" \
+        "config_file=$replace_init_conf"
       up_db
 
-      echo "> Replacing pg_hba.conf with $replace_pg_hba_conf"
+      log_simple "Applying pg_hba.conf configuration" \
+        "event=pg_hba_replace_start"
       replace_pg_hba # Moved this step first to ensure pg_hba.conf is updated before running post init scripts to avoid any access issues
 
-      echo "> Running post init scripts"
+      log_simple "Running post-init scripts" \
+        "event=post_init_start"
       post_init_script
       
       replace_configuration
@@ -479,6 +524,11 @@ case $mode in
       replace_pg_hba
     fi
 
+    log_simple "Recovery completed successfully" \
+      "event=recovery_completed" \
+      "mode=override" \
+      "volume=$vol_name" \
+      "service=$service"
     echo ""
     echo "========================================="
     echo "✓ Recovery completed successfully!"
@@ -491,15 +541,20 @@ case $mode in
     # Run recovery on new volume mode
     # Down container
     compose_down
-    echo "Creating new volume: $new_volume_name"
-    echo "Updating compose file"
+    log_simple "Creating new volume and updating compose file" \
+      "event=new_volume_mode_start" \
+      "new_volume=$new_volume_name" \
+      "compose_file=$compose_filepath"
     sed -i.bak "s/$volume_name/$new_volume_name/g" "$compose_filepath"
     compose_up
     compose_down
     new_compose_vol_name=$(get_full_volume_name "$new_volume_name")
     # pg_backctl handles the restoration of the backup
     # run in local or aws mode
-    echo "Starting pg_backctl"
+    log_simple "Starting pg_backctl restore" \
+      "event=restore_start" \
+      "mode=new_volume" \
+      "volume=$new_compose_vol_name"
     if [ -n "${backup_path:-}" ]; then
       run_local "$new_compose_vol_name"
     else
@@ -508,6 +563,12 @@ case $mode in
     up_db
     replace_configuration
     replace_pg_hba
+    log_simple "Recovery completed successfully" \
+      "event=recovery_completed" \
+      "mode=new_volume" \
+      "volume=$new_volume_name" \
+      "service=$service" \
+      "compose_file=$compose_filepath"
     echo ""
     echo "========================================="
     echo "✓ Recovery completed successfully!"
@@ -523,6 +584,8 @@ case $mode in
 esac
 
 # Final success message for all modes
+log_simple "Database recovery operation completed" \
+  "event=recovery_operation_completed"
 echo ""
 echo "✓ Database recovery completed successfully"
 echo ""
