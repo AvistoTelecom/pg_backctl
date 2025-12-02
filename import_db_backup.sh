@@ -475,8 +475,8 @@ case $mode in
       "volume_name=$volume_name"
     vol_name=$(get_full_volume_name "$volume_name")
 
-    # Check if volume exists
-    if ! docker volume ls | grep -q "$vol_name"; then
+    # Check if volume exists (exact match)
+    if ! docker volume ls --format '{{.Name}}' | grep -q "^${vol_name}$"; then
       die "Volume $vol_name does not exist" $ERR_UNSAFE_VOLUME
     fi
 
