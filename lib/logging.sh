@@ -51,8 +51,16 @@ log_json() {
     # Skip empty keys
     if [ -n "$key" ]; then
       local key_escaped=$(json_escape "$key")
-      local value_escaped=$(json_escape "$value")
-      json="$json,\"$key_escaped\":\"$value_escaped\""
+
+      # Auto-detect numeric values (integers and decimals)
+      if [[ "$value" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
+        # Numeric value - output without quotes
+        json="$json,\"$key_escaped\":$value"
+      else
+        # String value - output with quotes and escaping
+        local value_escaped=$(json_escape "$value")
+        json="$json,\"$key_escaped\":\"$value_escaped\""
+      fi
     fi
     shift
   done
