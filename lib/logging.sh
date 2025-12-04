@@ -7,11 +7,16 @@
 # - LOG_FILE: Path to log file (optional, for file logging)
 # - SCRIPT_NAME: Name of the calling script (for logging context)
 
-# Escape JSON strings
+# Escape JSON strings - pure bash implementation for performance
 json_escape() {
   local string="$1"
-  # Escape backslashes, double quotes, tabs, newlines, and carriage returns
-  printf '%s' "$string" | python3 -c 'import json, sys; print(json.dumps(sys.stdin.read())[1:-1])'
+  # Escape in order: backslashes first (to avoid double-escaping), then quotes, then control chars
+  string="${string//\\/\\\\}"      # \ -> \\
+  string="${string//\"/\\\"}"      # " -> \"
+  string="${string//$'\n'/\\n}"    # newline -> \n
+  string="${string//$'\r'/\\r}"    # carriage return -> \r
+  string="${string//$'\t'/\\t}"    # tab -> \t
+  echo "$string"
 }
 
 # Main JSON logging function
