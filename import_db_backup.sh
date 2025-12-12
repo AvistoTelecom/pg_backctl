@@ -12,6 +12,10 @@ source "$SCRIPT_DIR/lib/docker_utils.sh"
 
 # Set up logging context
 SCRIPT_NAME="import_db_backup"
+LOG_DIR="$SCRIPT_DIR/logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/import.log"
+: > "$LOG_FILE"
 
 # Additional error codes specific to this script
 ERR_LOCAL_BACKUP=13     # Local backup files missing

@@ -1043,6 +1043,8 @@ mkdir -p "$LOG_DIR"
 
 # Single JSON log file for all backups
 LOG_FILE="$LOG_DIR/backup.log"
+# Clear log file for new run
+: > "$LOG_FILE"
 
 # Record start time for metrics
 BACKUP_START_TIME=$(date +%s)

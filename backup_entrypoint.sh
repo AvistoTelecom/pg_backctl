@@ -10,6 +10,10 @@ source "$SCRIPT_DIR/lib/docker_utils.sh"
 
 # Set up logging context
 SCRIPT_NAME="pg_backctl_container"
+LOG_DIR="$SCRIPT_DIR/logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/container_backup.log"
+: > "$LOG_FILE"
 
 # Check for required commands
 check_required_commands pg_basebackup tar grep
