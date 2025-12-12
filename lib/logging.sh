@@ -7,6 +7,30 @@
 # - LOG_FILE: Path to log file (optional, for file logging)
 # - SCRIPT_NAME: Name of the calling script (for logging context)
 
+# Rotate log files (keep last N files)
+# Usage: rotate_logs "/path/to/logfile.log" [max_rotations]
+rotate_logs() {
+  local log_file="$1"
+  local max_rotations="${2:-5}"  # Default: keep 5 old logs
+  
+  # If log file doesn't exist, nothing to rotate
+  [ ! -f "$log_file" ] && return 0
+  
+  # Remove oldest log if at limit
+  local oldest="$log_file.$max_rotations"
+  [ -f "$oldest" ] && rm -f "$oldest"
+  
+  # Rotate existing logs (from newest to oldest)
+  for i in $(seq $((max_rotations - 1)) -1 1); do
+    local old="$log_file.$i"
+    local new="$log_file.$((i + 1))"
+    [ -f "$old" ] && mv "$old" "$new"
+  done
+  
+  # Rotate current log to .1
+  [ -f "$log_file" ] && mv "$log_file" "$log_file.1"
+}
+
 # Escape JSON strings - pure bash implementation for performance
 json_escape() {
   local string="$1"
@@ -45,6 +69,12 @@ log_json() {
 
   # Parse additional fields (key=value pairs)
   while [ $# -gt 0 ]; do
+    # Validate input contains '=' sign
+    if [[ ! "$1" =~ = ]]; then
+      shift
+      continue  # Skip malformed input
+    fi
+    
     local key="${1%%=*}"
     local value="${1#*=}"
 
@@ -91,9 +121,13 @@ log() {
   if [[ "$msg" =~ ^ERROR:\ * ]]; then
     level="ERROR"
     clean_msg="${msg#ERROR: }"
+    # Fallback to original if empty after prefix removal
+    [ -z "$clean_msg" ] && clean_msg="$msg"
   elif [[ "$msg" =~ ^WARNING:\ * ]]; then
     level="WARN"
     clean_msg="${msg#WARNING: }"
+    # Fallback to original if empty after prefix removal
+    [ -z "$clean_msg" ] && clean_msg="$msg"
   fi
 
   # Call log_json with remaining arguments
