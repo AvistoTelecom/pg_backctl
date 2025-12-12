@@ -12,8 +12,12 @@ source "$SCRIPT_DIR/lib/docker_utils.sh"
 SCRIPT_NAME="pg_backctl_container"
 LOG_DIR="$SCRIPT_DIR/logs"
 mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/container_backup.log"
-: > "$LOG_FILE"
+
+# Unified log file for all pg_backctl scripts
+LOG_FILE="$LOG_DIR/pg_backctl.log"
+
+# Rotate logs before starting (keep last 5 logs)
+rotate_logs "$LOG_FILE" 5
 
 # Check for required commands
 check_required_commands pg_basebackup tar grep

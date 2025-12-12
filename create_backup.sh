@@ -1037,14 +1037,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Initialize log file
+# Initialize unified log file
 LOG_DIR="$SCRIPT_DIR/logs"
 mkdir -p "$LOG_DIR"
 
-# Single JSON log file for all backups
-LOG_FILE="$LOG_DIR/backup.log"
-# Clear log file for new run
-: > "$LOG_FILE"
+# Unified log file for all pg_backctl scripts
+LOG_FILE="$LOG_DIR/pg_backctl.log"
+
+# Rotate logs before starting (keep last 5 logs)
+rotate_logs "$LOG_FILE" 5
 
 # Record start time for metrics
 BACKUP_START_TIME=$(date +%s)

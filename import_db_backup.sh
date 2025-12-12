@@ -14,8 +14,12 @@ source "$SCRIPT_DIR/lib/docker_utils.sh"
 SCRIPT_NAME="import_db_backup"
 LOG_DIR="$SCRIPT_DIR/logs"
 mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/import.log"
-: > "$LOG_FILE"
+
+# Unified log file for all pg_backctl scripts
+LOG_FILE="$LOG_DIR/pg_backctl.log"
+
+# Rotate logs before starting (keep last 5 logs)
+rotate_logs "$LOG_FILE" 5
 
 # Additional error codes specific to this script
 ERR_LOCAL_BACKUP=13     # Local backup files missing
