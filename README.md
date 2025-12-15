@@ -458,26 +458,21 @@ A: Use the new volume mode (-V) to restore to a test volume periodically.
 
 ## Monitoring & Observability
 
-pg_backctl generates logs in nginx combined log format for integration with monitoring tools like New Relic Infrastructure agent.
+pg_backctl uses structured **JSON logging** for easy integration with monitoring stacks (New Relic, Datadog, ELK, etc.).
 
-**Log Location:** `logs/backup.log`
+**Log Location:** `logs/pg_backctl.log` (with automatic rotation)
 
-**Log Format:** nginx combined log format
-```
-$hostname - $service [$time_local] "$event_type label HTTP/1.1" $status $bytes "$destination" "$user_agent"
-```
+**Format:**
+Standard JSON with `level` and `message` fields, plus custom context.
 
-**Example Log Entry:**
-```
-myhost - pg_backctl [27/Oct/2024:16:52:10 +0000] "backup_completed 20251027T143000 HTTP/1.1" 200 1073741824 "s3://mybucket/backups/20251027T143000" "pg_backctl/1.3.0 compression=gzip duration=450s"
+```json
+{"level":"INFO","message":"Backup completed","timestamp":"2025-12-15T10:15:08Z","event":"backup.success","duration":450}
 ```
 
-**Event Types:**
-- `backup_started` - Backup operation initiated
-- `backup_completed` - Backup finished successfully
-- `backup_failed` - Backup encountered an error
-- `backup_uploaded` - Backup uploaded to S3
-- `retention_cleanup` - Old backups removed
+**Features:**
+- **Standardized**: Always includes `level`, `message`, `timestamp`.
+- **Context-Rich**: Custom key-value pairs (e.g., `event=backup.fail`, `size_gb=10`) are automatically parsed into JSON fields.
+- **Unified**: All scripts write to the same log file.
 
 ## Contributing
 
