@@ -59,7 +59,7 @@ log_json() {
   local message_escaped=$(json_escape "$message")
 
   # Start building JSON
-  local json="{\"level\":\"$level_escaped\",\"log\":\"$message_escaped\",\"timestamp\":\"$timestamp\""
+  local json="{\"level\":\"$level_escaped\",\"message\":\"$message_escaped\",\"timestamp\":\"$timestamp\""
 
   # Add script name if available
   if [ -n "${SCRIPT_NAME:-}" ]; then
