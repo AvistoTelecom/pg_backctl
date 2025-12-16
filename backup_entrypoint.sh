@@ -9,7 +9,15 @@ source "$SCRIPT_DIR/lib/logging.sh"
 source "$SCRIPT_DIR/lib/docker_utils.sh"
 
 # Set up logging context
-SCRIPT_NAME="pg_backctl"
+SCRIPT_NAME="pg_backctl_container"
+LOG_DIR="$SCRIPT_DIR/logs"
+mkdir -p "$LOG_DIR"
+
+# Unified log file for all pg_backctl scripts
+LOG_FILE="$LOG_DIR/pg_backctl.log"
+
+# Rotate logs before starting (keep last 5 logs)
+rotate_logs "$LOG_FILE" 5
 
 # Check for required commands
 check_required_commands pg_basebackup tar grep
@@ -21,13 +29,22 @@ create_backup() {
   local user="${DB_USER:-postgres}"
   local compression_flag="${COMPRESSION_FLAG:-}"
 
-  log_simple "Starting pg_basebackup from $host:$port as user $user"
-  log_simple "Output directory: /backup"
+  log "Starting pg_basebackup from $host:$port as user $user" \
+    "event=pg_basebackup_start" \
+    "db_host=$host" \
+    "db_port=$port" \
+    "db_user=$user"
+
+  log "Output directory: /backup" \
+    "event=backup_output_dir" \
+    "output_dir=/backup"
 
   # Run pg_basebackup
   pg_basebackup -h "$host" -p "$port" -U "$user" -D /backup -Ft $compression_flag -P -v
 
-  log_simple "Backup completed"
+  log "Backup completed" \
+    "event=pg_basebackup_completed"
+
   ls -lh /backup
 }
 
@@ -37,7 +54,10 @@ upload_to_s3() {
   bucket="${bucket%/}"
   local label="${BACKUP_LABEL}"
 
-  log_simple "Uploading backup to S3: s3://$bucket/$label/"
+  log "Uploading backup to S3: s3://$bucket/$label/" \
+    "event=s3_upload_start" \
+    "s3_bucket=$bucket" \
+    "backup_label=$label"
 
   # Configure AWS CLI
   aws configure set aws_access_key_id "$AWS_ACCESS_KEY_ID"
@@ -47,11 +67,15 @@ upload_to_s3() {
   # Upload files to S3
   aws s3 cp /backup/ "s3://$bucket/$label/" --recursive --endpoint-url "$S3_ENDPOINT"
 
-  log_simple "Upload completed to s3://$bucket/$label/"
+  log "Upload completed to s3://$bucket/$label/" \
+    "event=s3_upload_completed" \
+    "s3_destination=s3://$bucket/$label/"
 }
 
 # Main logic
-log_simple "Backup mode"
+log "Backup mode" \
+  "event=container_start" \
+  "mode=backup"
 
 # Perform backup
 create_backup
@@ -64,7 +88,10 @@ if [[ -n "${S3_BACKUP_URL:-}" ]]; then
   fi
   upload_to_s3
 else
-  log_simple "Local backup mode - files saved to /backup"
+  log "Local backup mode - files saved to /backup" \
+    "event=local_backup_mode" \
+    "backup_path=/backup"
 fi
 
-log_simple "Backup operation completed successfully"
+log "Backup operation completed successfully" \
+  "event=container_completed"

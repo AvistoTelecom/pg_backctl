@@ -9,14 +9,26 @@ source "$SCRIPT_DIR/lib/logging.sh"
 source "$SCRIPT_DIR/lib/docker_utils.sh"
 
 # Set up logging context
-SCRIPT_NAME="pg_backctl"
+SCRIPT_NAME="pg_backctl_restore"
+LOG_DIR="$SCRIPT_DIR/logs"
+mkdir -p "$LOG_DIR"
+
+# Unified log file for all pg_backctl scripts
+LOG_FILE="$LOG_DIR/pg_backctl.log"
+
+# Rotate logs before starting (keep last 5 logs)
+rotate_logs "$LOG_FILE" 5
 
 # Check for required commands
 check_required_commands aws bzip2 tar grep sed
 
 # Clean the volume
-log_simple "Cleaning /data volume..."
+log_simple "Cleaning /data volume..." \
+  "event=volume_cleanup_start" \
+  "target_volume=/data"
 rm -rf /data/*
+log_simple "Volume cleaned" \
+  "event=volume_cleanup_completed"
 
 fetch_wals() {
   local info="$1"
@@ -60,31 +72,40 @@ fetch_wals() {
 }
 
 restore_backup() {
-  echo "Restoring base backup..."
+  log_simple "Restoring base backup..." \
+    "event=restore_start"
 
   # Check which backup format we have
   if [ -f /backup/data.tar.bz2 ]; then
     # Old format (other tools)
-    log_simple "Restoring from data.tar.bz2 format..."
+    log_simple "Restoring from data.tar.bz2 format..." \
+      "event=restore_format_detected" \
+      "format=legacy_data_tar_bz2"
     tar -jxvf /backup/data.tar.bz2 -C /data/
   elif [ -f /backup/base.tar.gz ]; then
     # pg_backctl format
-    log_simple "Restoring from pg_basebackup format (base.tar.gz + pg_wal.tar.gz)..."
+    log_simple "Restoring from pg_basebackup format (base.tar.gz + pg_wal.tar.gz)..." \
+      "event=restore_format_detected" \
+      "format=pg_backctl_gzip"
     tar -zxvf /backup/base.tar.gz -C /data/
 
     # Check if pg_wal exists separately
     if [ -f /backup/pg_wal.tar.gz ]; then
-      log_simple "Extracting pg_wal.tar.gz..."
+      log_simple "Extracting pg_wal.tar.gz..." \
+        "event=wal_extraction_start"
       tar -zxvf /backup/pg_wal.tar.gz -C /data/pg_wal/
     fi
   elif [ -f /backup/base.tar.bz2 ]; then
     # pg_backctl format with bzip2
-    log_simple "Restoring from pg_basebackup format (base.tar.bz2 + pg_wal.tar.bz2)..."
+    log_simple "Restoring from pg_basebackup format (base.tar.bz2 + pg_wal.tar.bz2)..." \
+      "event=restore_format_detected" \
+      "format=pg_backctl_bzip2"
     tar -jxvf /backup/base.tar.bz2 -C /data/
 
     # Check if pg_wal exists separately
     if [ -f /backup/pg_wal.tar.bz2 ]; then
-      log_simple "Extracting pg_wal.tar.bz2..."
+      log_simple "Extracting pg_wal.tar.bz2..." \
+        "event=wal_extraction_start"
       tar -jxvf /backup/pg_wal.tar.bz2 -C /data/pg_wal/
     fi
   else
@@ -92,8 +113,13 @@ restore_backup() {
     die "No recognized backup format found!" $ERR_RESTORE_FAILED
   fi
 
+  log_simple "Creating recovery.signal..." \
+    "event=recovery_signal_created"
   touch /data/recovery.signal
   chown -R 999:999 /data
+
+  log_simple "Restore completed" \
+    "event=restore_completed"
 }
 
 set_restore_command() {
@@ -107,13 +133,20 @@ set_restore_command() {
 
 # Main logic
 if [[ -n "${backup_path:-}" ]]; then
-  log_simple "local_backup mode"
+  log_simple "Local backup mode" \
+    "event=restore_mode" \
+    "mode=local" \
+    "backup_path=${backup_path:-}"
   # You may want to add local WAL extraction here if needed
 else
-  log_simple "Configuring S3 mode"
-  log_simple "S3_BACKUP_URL: ${S3_BACKUP_URL}"
-  log_simple "S3_ENDPOINT: ${S3_ENDPOINT}"
-  log_simple "AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}"
+  log_simple "Configuring S3 mode" \
+    "event=restore_mode" \
+    "mode=s3"
+  log_simple "S3 configuration" \
+    "event=s3_config" \
+    "s3_url=${S3_BACKUP_URL}" \
+    "s3_endpoint=${S3_ENDPOINT}" \
+    "aws_region=${AWS_DEFAULT_REGION}"
 
   aws configure set aws_access_key_id "$AWS_ACCESS_KEY_ID"
   aws configure set aws_secret_access_key "$AWS_SECRET_ACCESS_KEY"
@@ -122,35 +155,37 @@ else
   bucket="${S3_BACKUP_URL#s3://}"
   bucket="${bucket%/}"
 
-  log_simple "Parsed bucket: ${bucket}"
+  log_simple "Parsed bucket: ${bucket}" \
+    "event=s3_bucket_parsed" \
+    "bucket=$bucket"
 
   # Use S3_BACKUP_PATH if provided, otherwise auto-detect (backward compatible)
   if [ -n "${S3_BACKUP_PATH:-}" ]; then
-    log_simple "Using specified backup path: $S3_BACKUP_PATH"
+    log_simple "Using specified backup path: $S3_BACKUP_PATH" \
+      "event=backup_path_mode" \
+      "mode=specific" \
+      "s3_backup_path=$S3_BACKUP_PATH"
     s3_full_url="s3://${bucket}/${S3_BACKUP_PATH}/"
   else
-    log_simple "Auto-detecting latest backup (using postgresql-cluster/base/ prefix for backward compatibility)"
+    log_simple "Auto-detecting latest backup" \
+      "event=backup_path_mode" \
+      "mode=auto_detect"
     # Default to postgresql-cluster/base/ for backward compatibility
     search_prefix="${S3_SEARCH_PREFIX:-postgresql-cluster/base/}"
 
     # Treat "/" as root level (empty prefix)
     if [ "$search_prefix" = "/" ]; then
       search_prefix=""
-      log_simple "Searching at bucket root level"
+      log_simple "Searching at bucket root level" \
+        "event=s3_search_prefix" \
+        "prefix=root"
     fi
 
-    log_simple "========================================="
-    log_simple "Searching for latest backup"
-    log_simple "Bucket: s3://${bucket}/"
-    if [ -n "$search_prefix" ]; then
-      log_simple "Search prefix: ${search_prefix}"
-      log_simple "Full search path: s3://${bucket}/${search_prefix}"
-    else
-      log_simple "Search prefix: (root level)"
-      log_simple "Full search path: s3://${bucket}/"
-    fi
-    log_simple "Endpoint: ${S3_ENDPOINT}"
-    log_simple "========================================="
+    log_simple "Searching for latest backup" \
+      "event=s3_search_start" \
+      "bucket=s3://${bucket}/" \
+      "search_prefix=${search_prefix:-root}" \
+      "endpoint=${S3_ENDPOINT}"
 
     # Use json output to avoid sort_by error on empty results
     key=$(aws s3api list-objects-v2 \
@@ -162,36 +197,46 @@ else
       --query "reverse(sort_by(Contents || \`[]\`,&LastModified))[0].Key" | tr -d '"')
 
     if [ -z "$key" ] || [ "$key" = "null" ] || [ "$key" = "None" ]; then
-      log_simple "Available prefixes in bucket:"
+      log_simple "Available prefixes in bucket:" \
+        "event=s3_list_available"
       aws s3 ls "s3://${bucket}/" --endpoint "$S3_ENDPOINT" || echo "Failed to list bucket contents"
       die "No backups found in s3://${bucket}/${search_prefix}" $ERR_RESTORE_FAILED
     fi
 
     folder="${key%/*}/"
     s3_full_url="s3://${bucket}/${folder}"
-    log_simple "Found latest backup: $s3_full_url"
+    log_simple "Found latest backup: $s3_full_url" \
+      "event=s3_backup_found" \
+      "s3_backup_url=$s3_full_url"
   fi
 
-  log_simple "========================================="
-  log_simple "Downloading backup from S3"
-  log_simple "URL: $s3_full_url"
-  log_simple "Endpoint: $S3_ENDPOINT"
-  log_simple "Region: $AWS_DEFAULT_REGION"
-  log_simple "========================================="
+  log_simple "Downloading backup from S3" \
+    "event=s3_download_start" \
+    "s3_url=$s3_full_url" \
+    "endpoint=$S3_ENDPOINT" \
+    "region=$AWS_DEFAULT_REGION"
 
   aws s3 cp "$s3_full_url" /backup/ --endpoint "$S3_ENDPOINT" --recursive
 
-  log_simple "Download completed successfully"
+  log_simple "Download completed successfully" \
+    "event=s3_download_completed"
 
   # Check if backup.info exists (for WAL archiving backups)
   info="/backup/backup.info"
   if [ -f "$info" ]; then
-    log_simple "Found backup.info, fetching WAL files..."
+    log_simple "Found backup.info, fetching WAL files..." \
+      "event=wal_fetch_start" \
+      "backup_info_found=true"
     fetch_wals "$info" "$bucket"
   else
-    log_simple "No backup.info found (pg_basebackup format - WAL files included in backup)"
+    log_simple "No backup.info found (pg_basebackup format - WAL files included in backup)" \
+      "event=wal_info_check" \
+      "backup_info_found=false"
   fi
 fi
 
 restore_backup
 set_restore_command
+
+log_simple "Restore operation completed successfully" \
+  "event=restore_operation_completed"
