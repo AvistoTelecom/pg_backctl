@@ -79,6 +79,7 @@ db_name=""
 service=""
 compose_filepath=""
 pg_backctl_image="pg_backctl:latest"
+container_name="pg_backctl"
 config_file=""
 min_disk_space_gb=""
 disk_space_margin_gb="2"  # Safety margin to add to volume size when calculating required space
@@ -134,6 +135,7 @@ config_handler() {
     docker)
       case "$key" in
         image) pg_backctl_image="$value" ;;
+        container_name) container_name="$value" ;;
       esac
       ;;
     advanced)
@@ -504,6 +506,7 @@ upload_backup_to_s3() {
 
   # Run docker with explicit error handling
   if ! docker run -t --rm \
+    --name "$container_name" \
     -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY" \
     -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_KEY" \
     -e AWS_DEFAULT_REGION="$AWS_REGION" \
@@ -627,6 +630,7 @@ cleanup_old_backups() {
   # List all backups in the prefix, sorted by LastModified (newest first)
   local backup_list
   backup_list=$(docker run -t --rm \
+    --name "$container_name" \
     -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY" \
     -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_KEY" \
     -e AWS_DEFAULT_REGION="$AWS_REGION" \
@@ -651,6 +655,7 @@ cleanup_old_backups() {
   # Extract unique backup directories (everything up to the first file)
   local backup_dirs
   backup_dirs=$(echo "$backup_list" | docker run -i --rm \
+    --name "$container_name" \
     --entrypoint python3 \
     "$pg_backctl_image" \
     -c "
@@ -727,6 +732,7 @@ for dir_path in to_delete:
       "backup_dir=$backup_dir"
 
     if docker run -t --rm \
+      --name "$container_name" \
       -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY" \
       -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_KEY" \
       -e AWS_DEFAULT_REGION="$AWS_REGION" \

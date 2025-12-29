@@ -474,6 +474,16 @@ Standard JSON with `level` and `message` fields, plus custom context.
 - **Context-Rich**: Custom key-value pairs (e.g., `event=backup.fail`, `size_gb=10`) are automatically parsed into JSON fields.
 - **Unified**: All scripts write to the same log file.
 
+### Container Naming
+
+For easier container identification in `docker ps` and monitoring tools, customize container names in your config:
+
+```ini
+[docker]
+container_name = pg_backup_prod           # Default: pg_backctl
+standby_container_name = pg_replica_01    # Default: {container_name}_standby
+```
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
