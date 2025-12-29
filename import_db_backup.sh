@@ -32,6 +32,8 @@ pgversion="latest"
 mode=0
 standby=false
 pg_backctl_image="pg_backctl:latest"
+container_name="pg_backctl"
+standby_container_name=""  # Defaults to ${container_name}_standby if not set
 replace_pg_hba_conf=""
 post_init_conf=""
 config_file=""
@@ -86,6 +88,8 @@ config_handler() {
     docker)
       case "$key" in
         image) pg_backctl_image="$value" ;;
+        container_name) container_name="$value" ;;
+        standby_container_name) standby_container_name="$value" ;;
       esac
       ;;
   esac
@@ -215,7 +219,7 @@ run_pg_backctl() {
 
   # Build docker run command with optional S3_BACKUP_PATH
   local docker_cmd="docker run -t --rm \
-  --name pg_backctl \
+  --name \"$container_name\" \
   -e AWS_ACCESS_KEY_ID=\"$AWS_ACCESS_KEY\" \
   -e AWS_SECRET_ACCESS_KEY=\"$AWS_SECRET_KEY\" \
   -e AWS_DEFAULT_REGION=\"$AWS_REGION\" \
@@ -241,7 +245,7 @@ run_local() {
   local vol="${1:-PG_BACKCTL_STANDBY_VOLUME}"
   echo "Starting pg_backctl in local backup mode"
   docker run -t --rm \
-  --name pg_backctl \
+  --name "$container_name" \
   -e backup_path="${backup_path:-}" \
   -v "${backup_path:-}":/backup \
   -v "$vol":/data "$pg_backctl_image"
@@ -427,7 +431,7 @@ case $mode in
       run_pg_backctl
     fi
     docker run -d --rm \
-    --name pg_backctl_standby \
+    --name "${standby_container_name:-${container_name}_standby}" \
     -v PG_BACKCTL_STANDBY_VOLUME:/var/lib/postgresql/data \
     postgres:"$pgversion"
 
