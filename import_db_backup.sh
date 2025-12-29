@@ -215,6 +215,7 @@ run_pg_backctl() {
 
   # Build docker run command with optional S3_BACKUP_PATH
   local docker_cmd="docker run -t --rm \
+  --name pg_backctl \
   -e AWS_ACCESS_KEY_ID=\"$AWS_ACCESS_KEY\" \
   -e AWS_SECRET_ACCESS_KEY=\"$AWS_SECRET_KEY\" \
   -e AWS_DEFAULT_REGION=\"$AWS_REGION\" \
@@ -240,6 +241,7 @@ run_local() {
   local vol="${1:-PG_BACKCTL_STANDBY_VOLUME}"
   echo "Starting pg_backctl in local backup mode"
   docker run -t --rm \
+  --name pg_backctl \
   -e backup_path="${backup_path:-}" \
   -v "${backup_path:-}":/backup \
   -v "$vol":/data "$pg_backctl_image"
@@ -425,6 +427,7 @@ case $mode in
       run_pg_backctl
     fi
     docker run -d --rm \
+    --name pg_backctl_standby \
     -v PG_BACKCTL_STANDBY_VOLUME:/var/lib/postgresql/data \
     postgres:"$pgversion"
 
